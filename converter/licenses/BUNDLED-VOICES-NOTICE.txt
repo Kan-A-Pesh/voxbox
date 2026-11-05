@@ -1,0 +1,10 @@
+Bundled voice candidates: VCTK p231 and p226, RVC v2 with RMVPE.
+Model weights by Nekochu, Apache License 2.0, according to the pinned model card:
+https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/blob/005c2f948ee9dafd7e3aa7f261b4c3a24beebeef/README.md
+
+Training data: Yamagishi, Junichi; Veaux, Christophe; MacDonald, Kirsten (2019).
+CSTR VCTK Corpus: English Multi-speaker Corpus for CSTR Voice Cloning Toolkit
+(version 0.92). University of Edinburgh, Centre for Speech Technology Research.
+https://doi.org/10.7488/ds/2645 — CC BY 4.0.
+Models are trained adaptations of VCTK speech. VoxBox converts the published
+checkpoints to ONNX; it does not claim endorsement by the authors or speakers.

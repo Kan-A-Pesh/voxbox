@@ -1,0 +1,29 @@
+[package]
+name = "voxbox-rvc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Local RVC voice conversion (ONNX Runtime: CUDA / DirectML / CPU) for VoxBox"
+
+[features]
+default = ["cuda", "directml"]
+cuda = ["ort/cuda"]
+directml = ["ort/directml"]
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic"] }
+# Pin the matching prerelease: ort's transitive semver range also accepts incompatible rc versions.
+ort-sys = { version = "=2.0.0-rc.10", default-features = false }
+rustfft = "6.2"
+libloading = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+tempfile = "3"
