@@ -1,0 +1,14 @@
+/target
+node_modules/
+ui/dist/
+*.log
+.DS_Store
+/src-tauri/gen/
+/assets/models/
+__pycache__/
+.pytest_cache/
+*.pyc
+__pycache__/
+.pytest_cache/
+*.pyc
+/installer/resources/vbcable/
