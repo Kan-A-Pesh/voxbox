@@ -1,0 +1,27 @@
+[package]
+name = "voxbox-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Real-time audio engine of VoxBox: mic capture, voice chain, soundboard mixer, dual output"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+voxbox-dsp.workspace = true
+voxbox-rvc.workspace = true
+crossbeam-queue = "0.3"
+cpal = "0.18"
+rtrb = "0.3"
+rubato = "0.16"
+nnnoiseless = { version = "0.5", default-features = false }
+symphonia = { version = "0.5", features = ["mp3", "wav", "ogg", "vorbis", "flac", "pcm"] }
+
+[dev-dependencies]
+hound = "3.5"
+
+[target.'cfg(windows)'.dependencies]
+cpal = { version = "0.18", features = ["realtime"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Media", "Win32_System_Threading"] }

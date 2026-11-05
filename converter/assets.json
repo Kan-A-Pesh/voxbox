@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "assets": [
+    {
+      "name": "ContentVec 768 layer 12",
+      "filename": "contentvec.onnx",
+      "url": "https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/cbfbabdabe6a1414292bade8f857fb6074abf130/contentvec_768l12.onnx",
+      "sha256": "cbddd8fa9352b3128df6359e2e3da6be0f9072e768e51e3efc3004e5030ea97f",
+      "license": "MIT",
+      "upstream": "https://github.com/auspicious3000/contentvec",
+      "provenance": "https://huggingface.co/TigreGotico/voiceclonnx-rvc/blob/cbfbabdabe6a1414292bade8f857fb6074abf130/PROVENANCE.md"
+    },
+    {
+      "name": "RMVPE",
+      "filename": "rmvpe.onnx",
+      "url": "https://huggingface.co/TigreGotico/voiceclonnx-rvc/resolve/cbfbabdabe6a1414292bade8f857fb6074abf130/rmvpe.onnx",
+      "sha256": "5370e71ac80af8b4b7c793d27efd51fd8bf962de3a7ede0766dac0befa3660fd",
+      "license": "Apache-2.0; MIT (ONNX distribution)",
+      "upstream": "https://github.com/Dream-High/RMVPE",
+      "provenance": "https://huggingface.co/TigreGotico/voiceclonnx-rvc/blob/cbfbabdabe6a1414292bade8f857fb6074abf130/PROVENANCE.md"
+    }
+  ]
+}

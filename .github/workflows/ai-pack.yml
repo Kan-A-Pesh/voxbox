@@ -1,0 +1,30 @@
+name: AI voices pack
+
+# Heavy (PyTorch CPU, ~1 GB): built on demand and for releases, not on every PR.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ai-pack:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build pack content
+        shell: pwsh
+        run: ./scripts/build_ai_pack.ps1 -OutputDir pack
+      - name: Build add-on installer
+        shell: pwsh
+        run: makensis /DPACK_DIR=$PWD\pack /DOUT_FILE=$PWD\VoxBox-Voix-IA-setup.exe installer\ai-pack.nsi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voxbox-ai-pack
+          path: VoxBox-Voix-IA-setup.exe
+          if-no-files-found: error

@@ -1,0 +1,15 @@
+[package]
+name = "voxbox-dsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Real-time voice effects and built-in voice presets for VoxBox"
+
+[dependencies]
+serde.workspace = true
+rustfft = "6.4"
+
+[dev-dependencies]
+serde_json.workspace = true
+hound = "3.5"
