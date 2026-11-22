@@ -13,6 +13,8 @@ interface Store {
   call: <K extends CommandName>(cmd: K, args: CommandArgs<K>) => Promise<CommandResult<K> | undefined>;
   /** Optimistic settings patch, reconciled with the backend's answer (reverted on failure). */
   patchSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  /** Optimistically activate a voice; only the latest choice may write what the backend answered. */
+  selectVoice: (id: string) => Promise<void>;
   toasts: Toast[];
   notify: (message: string, kind?: Toast["kind"]) => void;
   dismiss: (id: number) => void;
@@ -38,6 +40,8 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const [attempt, setAttempt] = useState(0);
+  // Bumped by every voice choice and every pushed snapshot: only the latest may set the active voice.
+  const selectSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,11 +52,14 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
         const snapshot = await backend.invoke("get_snapshot", {});
         if (cancelled) return;
         setLoad({ kind: "ready", backend, snapshot });
-        unlisten = await backend.listen("snapshot-changed", (s) =>
+        unlisten = await backend.listen("snapshot-changed", (s) => {
+          // The pushed snapshot is authoritative (e.g. a voice hotkey): a voice choice still waiting for
+          // its answer must not write an older active voice over it.
+          selectSeq.current++;
           setLoad((prev) =>
             prev.kind === "ready" ? { ...prev, snapshot: { ...s, status: newerStatus(prev.snapshot.status, s.status) } } : prev,
-          ),
-        );
+          );
+        });
         if (cancelled) unlisten();
       } catch (e) {
         if (!cancelled) setLoad({ kind: "error", message: errorMessage(e) });
@@ -96,14 +103,22 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
     settingsRef.current = load.kind === "ready" ? load.snapshot.settings : null;
   }, [load]);
 
+  // Settings answers can complete out of order, and other commands (e.g. set_active_voice) write settings
+  // too: an answer only updates the keys it patched, and only those no newer patch has touched since.
+  const patchSeq = useRef(0);
+  const latestPatchOf = useRef<Partial<Record<keyof AppSettings, number>>>({});
   const patchSettings = useCallback(
     async (patch: Partial<AppSettings>) => {
       const before = settingsRef.current;
       if (!before) return;
+      const seq = ++patchSeq.current;
+      const keys = Object.keys(patch) as (keyof AppSettings)[];
+      keys.forEach((k) => (latestPatchOf.current[k] = seq));
+      const ownKeys = () => keys.filter((k) => latestPatchOf.current[k] === seq);
       setSnapshot((s) => ({ ...s, settings: { ...s.settings, ...patch } }));
       const settings = await call("update_settings", { patch });
       if (settings) {
-        setSnapshot((s) => ({ ...s, settings }));
+        setSnapshot((s) => ({ ...s, settings: { ...s.settings, ...pick(settings, ownKeys()) } }));
         return;
       }
       // Rejected: the backend may have moved anyway (e.g. devices it could not
@@ -111,19 +126,36 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
       const fresh = await backend?.invoke("get_snapshot", {}).catch(() => null);
       setSnapshot((s) =>
         fresh
-          ? { ...s, settings: fresh.settings, status: newerStatus(s.status, fresh.status) }
-          : { ...s, settings: { ...s.settings, ...revert(before, patch) } },
+          ? { ...s, settings: { ...s.settings, ...pick(fresh.settings, ownKeys()) }, status: newerStatus(s.status, fresh.status) }
+          : { ...s, settings: { ...s.settings, ...pick(before, ownKeys()) } },
       );
     },
     [backend, call, setSnapshot],
   );
 
+  const selectVoice = useCallback(
+    async (id: string) => {
+      const seq = ++selectSeq.current;
+      const previous = settingsRef.current?.activeVoiceId;
+      setSnapshot((s) => ({ ...s, settings: { ...s.settings, activeVoiceId: id } }));
+      const settings = await call("set_active_voice", { id });
+      if (seq !== selectSeq.current) return;
+      // Only the active voice: a full settings answer could carry older values of settings patched meanwhile.
+      // On failure the engine kept the previous voice (the backend may have stored the new id before failing
+      // to load it), so show that one and leave "Utiliser" available for a retry.
+      const activeVoiceId = settings?.activeVoiceId ?? previous;
+      if (!activeVoiceId) return;
+      setSnapshot((s) => ({ ...s, settings: { ...s.settings, activeVoiceId } }));
+    },
+    [call, setSnapshot],
+  );
+
   const value = useMemo<Store | null>(
     () =>
       load.kind === "ready"
-        ? { snapshot: load.snapshot, backend: load.backend, setSnapshot, call, patchSettings, toasts, notify, dismiss }
+        ? { snapshot: load.snapshot, backend: load.backend, setSnapshot, call, patchSettings, selectVoice, toasts, notify, dismiss }
         : null,
-    [load, setSnapshot, call, patchSettings, toasts, notify, dismiss],
+    [load, setSnapshot, call, patchSettings, selectVoice, toasts, notify, dismiss],
   );
 
   if (load.kind === "loading") return <BootScreen />;
@@ -132,9 +164,8 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-function revert(before: AppSettings, patch: Partial<AppSettings>): Partial<AppSettings> {
-  const keys = Object.keys(patch) as (keyof AppSettings)[];
-  return Object.fromEntries(keys.map((k) => [k, before[k]]));
+function pick(settings: AppSettings, keys: (keyof AppSettings)[]): Partial<AppSettings> {
+  return Object.fromEntries(keys.map((k) => [k, settings[k]]));
 }
 
 function BootScreen({ error, onRetry }: { error?: string; onRetry?: () => void }) {

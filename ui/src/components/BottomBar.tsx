@@ -1,12 +1,12 @@
 import { useVox } from "../state/store";
 import { acceleratorFor } from "../lib/hotkeys";
 import { PixelIcon } from "./PixelIcon";
-import { Toggle } from "./Controls";
 import { VuMeter } from "./VuMeter";
+import { Toggle } from "./Controls";
 
-export function BottomBar() {
+export function BottomBar({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { snapshot, patchSettings } = useVox();
-  const { settings, voices, hotkeys } = snapshot;
+  const { settings, voices, hotkeys, status } = snapshot;
   const voice = voices.find((v) => v.id === settings.activeVoiceId);
   const acc = voice ? acceleratorFor(hotkeys, { type: "voice", id: voice.id }) : null;
   const on = settings.voiceEnabled;
@@ -14,34 +14,36 @@ export function BottomBar() {
   return (
     <footer className="bottombar">
       <div className="now">
-        <span className="now__icon" style={{ borderColor: voice?.color }}>
-          <PixelIcon name={voice?.icon ?? "wrench"} scale={2} color={on ? voice?.color : "var(--muted)"} />
-        </span>
+        <PixelIcon name={voice?.icon ?? "wrench"} scale={3} color={on ? voice?.color : "var(--muted)"} />
         <span className="now__text">
           <span className="now__name">{voice?.name ?? "Aucune voix"}</span>
           <span className="now__meta">{on ? "voix active" : "voix coupée"}{acc ? ` · ${acc}` : ""}</span>
         </span>
       </div>
       <VuMeter />
-      <div className="bottombar__toggles">
-        <Toggle compact label="M'entendre" checked={settings.monitor} onChange={(monitor) => patchSettings({ monitor })} />
-        <Toggle compact label="Push-to-talk" checked={settings.pttMode} onChange={(pttMode) => patchSettings({ pttMode })} />
-        <Toggle
-          compact
-          label="Anti-bruit"
-          checked={settings.noiseSuppression}
-          onChange={(noiseSuppression) => patchSettings({ noiseSuppression })}
-        />
-      </div>
       <button
         type="button"
-        className={`power${on ? " is-on" : ""}`}
-        aria-pressed={on}
-        onClick={() => patchSettings({ voiceEnabled: !on })}
+        className="bar-btn"
+        aria-pressed={settings.monitor}
+        title="T'entendre dans le casque"
+        onClick={() => patchSettings({ monitor: !settings.monitor })}
       >
-        <span className="power__square" aria-hidden="true" />
-        {on ? "Voix activée" : "Voix coupée"}
+        <PixelIcon name="headphones" scale={2} />
+        M'entendre
       </button>
+      {!status.running ? (
+        <button type="button" className="bar-warning" onClick={onOpenSettings}>
+          <PixelIcon name="warning" scale={1} />
+          Moteur arrêté{status.restarting ? ", relance en cours" : ""} · voir Réglages
+        </button>
+      ) : null}
+      <Toggle
+        compact
+        className="power"
+        label="Changeur de voix"
+        checked={on}
+        onChange={(voiceEnabled) => patchSettings({ voiceEnabled })}
+      />
     </footer>
   );
 }

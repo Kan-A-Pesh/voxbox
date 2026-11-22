@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useId, useState } from "react";
-import type { DeviceInfo, DeviceSelection, Devices, HotkeyAction } from "../ipc/contract";
+import type { AiBackend, DeviceInfo, DeviceSelection, Devices, HotkeyAction } from "../ipc/contract";
 import { errorMessage, useVox } from "../state/store";
 import { acceleratorFor, conflictFor, describeAction, reconcileSoundHotkeys } from "../lib/hotkeys";
-import { PixelIcon } from "../components/PixelIcon";
-import { ErrorPanel, Toggle } from "../components/Controls";
+import { ErrorPanel, Slider, Toggle } from "../components/Controls";
 import { HotkeyCapture } from "../components/HotkeyCapture";
+import { RvcSettings } from "./voices/RvcSettings";
 
 const GLOBAL_ACTIONS: { action: HotkeyAction; hint: string }[] = [
   { action: { type: "toggleVoice" }, hint: "Coupe ou réactive le changeur de voix." },
@@ -13,9 +13,12 @@ const GLOBAL_ACTIONS: { action: HotkeyAction; hint: string }[] = [
   { action: { type: "stopAllSounds" }, hint: "Coupe tous les sons de la banque." },
 ];
 
+const BACKEND_LABEL: Record<AiBackend, string> = { cuda: "CUDA", directMl: "DirectML", cpu: "CPU" };
+const pct = (v: number) => `${Math.round(v * 100)} %`;
+
 export function SettingsScreen() {
   const { snapshot, setSnapshot, backend, call, patchSettings } = useVox();
-  const { settings, status, hotkeys } = snapshot;
+  const { settings, status, hotkeys, aiBackend } = snapshot;
   const [devices, setDevices] = useState<Devices | null>(null);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
@@ -48,164 +51,228 @@ export function SettingsScreen() {
   }
 
   return (
-    <section className="page" aria-labelledby="settings-title">
+    <section className="page page--narrow" aria-labelledby="settings-title">
       <header className="page__head">
         <h1 className="page__title" id="settings-title">Réglages</h1>
       </header>
-      <div className="settings">
-        <div className="settings__col">
-          {!status.cableFound ? (
-            <ErrorPanel
-              title="VB-Cable est introuvable"
-              message="Sans ce câble audio virtuel, Discord et tes jeux ne peuvent pas recevoir ta voix modifiée. Relance l'installateur de VoxBox : il réinstalle VB-Cable. Redémarre ensuite ton PC."
-            />
-          ) : null}
-          {!status.running && status.lastError ? (
-            <ErrorPanel
-              title={status.restarting ? "Le son est coupé, nouvelle tentative automatique" : "Le son est coupé"}
-              message={status.lastError}
-              action={
-                <button type="button" className="btn btn--small btn--ghost" onClick={() => void call("open_logs_folder", {})}>
-                  Ouvrir le dossier des journaux
-                </button>
+
+      <section className="settings-section" aria-labelledby="set-devices">
+        <div className="section-head">
+          <h2 className="section-title" id="set-devices">Périphériques</h2>
+          <button type="button" className="link-btn" onClick={refresh}>Actualiser</button>
+        </div>
+        {!status.cableFound ? (
+          <ErrorPanel
+            title="VB-Cable est introuvable"
+            message="Sans ce câble audio virtuel, Discord et tes jeux ne peuvent pas recevoir ta voix modifiée. Relance l'installateur de VoxBox : il réinstalle VB-Cable. Redémarre ensuite ton PC."
+          />
+        ) : null}
+        {!status.running && status.lastError ? (
+          <ErrorPanel
+            title={status.restarting ? "Le son est coupé, nouvelle tentative automatique" : "Le son est coupé"}
+            message={status.lastError}
+            action={
+              <button type="button" className="link-btn" onClick={() => void call("open_logs_folder", {})}>
+                Ouvrir le dossier des journaux
+              </button>
+            }
+          />
+        ) : null}
+        {status.running ? (
+          <div className="stack stack--tight">
+            <p className="label">Utilisés en ce moment</p>
+            <dl className="meta-list" aria-label="Périphériques du moteur audio">
+              <dt>Micro</dt>
+              <dd>{status.inputName ?? "Par défaut du système"}</dd>
+              <dt>Sortie</dt>
+              <dd>{status.cableFound ? status.cableName ?? "CABLE Input (VB-Cable)" : "VB-Cable introuvable"}</dd>
+              <dt>Casque</dt>
+              <dd>{status.monitorName ?? "Aucun casque ouvert"}</dd>
+            </dl>
+          </div>
+        ) : status.inputName || status.cableName ? (
+          // Stopped: no stream is open, the status keeps the names of the last ones (never invented ones).
+          <div className="stack stack--tight">
+            <p className="label">Derniers périphériques utilisés</p>
+            <dl className="meta-list" aria-label="Périphériques du moteur audio">
+              {status.inputName ? (
+                <>
+                  <dt>Micro</dt>
+                  <dd>{status.inputName}</dd>
+                </>
+              ) : null}
+              {status.cableName ? (
+                <>
+                  <dt>Sortie</dt>
+                  <dd>{status.cableName}</dd>
+                </>
+              ) : null}
+              {status.monitorName ? (
+                <>
+                  <dt>Casque</dt>
+                  <dd>{status.monitorName}</dd>
+                </>
+              ) : null}
+            </dl>
+          </div>
+        ) : null}
+        {deviceError ? (
+          <ErrorPanel title="Liste des périphériques indisponible" message={deviceError} />
+        ) : !devices ? (
+          <p className="hint" role="status">Recherche des périphériques…</p>
+        ) : (
+          <>
+            <DeviceSelect
+              label="Micro"
+              hint={
+                status.running && status.fallback
+                  ? `Tes périphériques choisis sont indisponibles : ceux du système sont utilisés en attendant (micro « ${status.inputName ?? "par défaut"} »). VoxBox y revient tout seul dès qu'ils sont branchés.`
+                  : "Le micro que tu utilises vraiment."
               }
+              devices={devices.inputs.filter((d) => !d.isCable)}
+              value={settings.devices.input}
+              defaultLabel="Par défaut du système"
+              onChange={(v) => setDevice("input", v)}
             />
-          ) : null}
-
-          <div className="panel stack">
-            <div className="panel__head">
-              <h2 className="panel__title">Périphériques</h2>
-              <button type="button" className="btn btn--small btn--ghost" onClick={refresh}>Actualiser</button>
-            </div>
-            {deviceError ? (
-              <ErrorPanel title="Liste des périphériques indisponible" message={deviceError} />
-            ) : !devices ? (
-              <p className="hint" role="status">Recherche des périphériques<span className="blink">_</span></p>
-            ) : (
-              <>
-                <DeviceSelect
-                  label="Micro"
-                  hint={
-                    status.running && status.fallback
-                      ? `Tes périphériques choisis sont indisponibles : ceux du système sont utilisés en attendant (micro « ${status.inputName ?? "par défaut"} »). VoxBox y revient tout seul dès qu'ils sont branchés.`
-                      : "Le micro que tu utilises vraiment."
-                  }
-                  icon="mic"
-                  devices={devices.inputs.filter((d) => !d.isCable)}
-                  value={settings.devices.input}
-                  defaultLabel="Par défaut du système"
-                  onChange={(v) => setDevice("input", v)}
-                />
-                <DeviceSelect
-                  label="Sortie vers les applis (VB-Cable)"
-                  hint="Dans Discord ou ton jeu, choisis « CABLE Output » comme micro."
-                  icon="radio"
-                  devices={devices.outputs.filter((d) => d.isCable)}
-                  value={settings.devices.cable}
-                  defaultLabel={status.cableFound ? "Détection automatique (CABLE Input)" : "VB-Cable non installé"}
-                  onChange={(v) => setDevice("cable", v)}
-                />
-                <DeviceSelect
-                  label="Casque"
-                  hint="Pour t'entendre et écouter les sons de la banque."
-                  icon="headphones"
-                  devices={devices.outputs.filter((d) => !d.isCable)}
-                  value={settings.devices.monitor}
-                  defaultLabel="Par défaut du système"
-                  onChange={(v) => setDevice("monitor", v)}
-                />
-                <p className="hint">
-                  Latence mesurée : <span className="cyan">{Math.round(status.latencyMs)} ms</span>
-                  {status.running ? "" : " · moteur arrêté"}
-                </p>
-              </>
-            )}
-          </div>
-
-          <div className="panel stack">
-            <h2 className="panel__title">Options</h2>
-            <Toggle
-              label="Anti-bruit"
-              hint="Filtre le clavier, le ventilo et le bruit de fond du micro."
-              checked={settings.noiseSuppression}
-              onChange={(noiseSuppression) => patchSettings({ noiseSuppression })}
+            <DeviceSelect
+              label="Sortie vers les applis (VB-Cable)"
+              hint="Dans Discord ou ton jeu, choisis « CABLE Output » comme micro."
+              devices={devices.outputs.filter((d) => d.isCable)}
+              value={settings.devices.cable}
+              defaultLabel={status.cableFound ? "Détection automatique (CABLE Input)" : "VB-Cable non installé"}
+              onChange={(v) => setDevice("cable", v)}
             />
-            <Toggle
-              label="Mode push-to-talk"
-              hint="Ta voix ne passe que pendant que tu maintiens le raccourci."
-              checked={settings.pttMode}
-              onChange={(pttMode) => patchSettings({ pttMode })}
+            <DeviceSelect
+              label="Casque"
+              hint="Pour t'entendre et écouter les sons de la banque."
+              devices={devices.outputs.filter((d) => !d.isCable)}
+              value={settings.devices.monitor}
+              defaultLabel="Par défaut du système"
+              onChange={(v) => setDevice("monitor", v)}
             />
-            <Toggle
-              label="Démarrer réduit"
-              hint="VoxBox s'ouvre directement dans la zone de notification."
-              checked={settings.startMinimized}
-              onChange={(startMinimized) => patchSettings({ startMinimized })}
-            />
-          </div>
-        </div>
-
-        <div className="settings__col">
-          <div className="panel">
-            <h2 className="panel__title">Raccourcis globaux</h2>
-            <p className="hint">Ils marchent même en jeu. Les raccourcis des sons se règlent sur leur fiche.</p>
-            <table className="hk-table">
-              <thead>
-                <tr>
-                  <th scope="col">Action</th>
-                  <th scope="col">Raccourci</th>
-                </tr>
-              </thead>
-              <tbody>
-                {GLOBAL_ACTIONS.map(({ action, hint }) => {
-                  const label = describeAction(action, snapshot);
-                  return (
-                    <tr key={action.type}>
-                      <th scope="row">
-                        <span className="hk-table__label">{label}</span>
-                        <span className="hint">{hint}</span>
-                      </th>
-                      <td>
-                        <HotkeyCapture
-                          label={`Raccourci pour ${label}`}
-                          value={acceleratorFor(hotkeys, action)}
-                          onChange={(acc) => bind(action, acc)}
-                          conflict={(acc) => {
-                            const c = conflictFor(hotkeys, action, acc);
-                            return c ? `Pris par ${describeAction(c.action, snapshot)} : réassigné ici.` : null;
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="panel stack about">
-            <h2 className="panel__title">À propos</h2>
-            <p className="about__line">
-              <PixelIcon name="mic" scale={2} color="var(--violet)" />
-              <span>VoxBox 0.1 · ta voix est traitée uniquement sur ton PC. Seul l’onglet MyInstants utilise Internet.</span>
+            <p className="hint">
+              Latence mesurée : <span className="mono">{Math.round(status.latencyMs)} ms</span>
+              {status.running ? "" : status.restarting ? " · moteur arrêté, relance automatique en cours" : " · moteur arrêté"}
             </p>
-            <p className="about__credit">
-              VB-CABLE est un donationware de VB-Audio (
-              <a href="https://www.vb-cable.com" target="_blank" rel="noreferrer">www.vb-cable.com</a>
-              ), toutes les participations sont les bienvenues.
-            </p>
-            <p className="hint">Sons en ligne fournis par MyInstants. Licences des modèles IA fournis : voir Voix IA.</p>
-          </div>
+          </>
+        )}
+      </section>
+
+      <section className="settings-section" aria-labelledby="set-options">
+        <h2 className="section-title" id="set-options">Options</h2>
+        <Toggle
+          label="Anti-bruit"
+          hint="Filtre le clavier, le ventilo et le bruit de fond du micro."
+          checked={settings.noiseSuppression}
+          onChange={(noiseSuppression) => patchSettings({ noiseSuppression })}
+        />
+        <Toggle
+          label="Mode push-to-talk"
+          hint="Ta voix ne passe que pendant que tu maintiens le raccourci."
+          checked={settings.pttMode}
+          onChange={(pttMode) => patchSettings({ pttMode })}
+        />
+        <Toggle
+          label="Démarrer réduit"
+          hint="VoxBox s'ouvre directement dans la zone de notification."
+          checked={settings.startMinimized}
+          onChange={(startMinimized) => patchSettings({ startMinimized })}
+        />
+      </section>
+
+      <section className="settings-section" aria-labelledby="set-hotkeys">
+        <div>
+          <h2 className="section-title" id="set-hotkeys">Raccourcis</h2>
+          <p className="hint">Ils marchent même en jeu. Les raccourcis des sons se règlent sur leur fiche.</p>
         </div>
-      </div>
+        <ul className="hk-list">
+          {GLOBAL_ACTIONS.map(({ action, hint }) => {
+            const label = describeAction(action, snapshot);
+            return (
+              <li key={action.type} className="hk-row">
+                <span className="hk-row__text">
+                  <span className="hk-row__label">{label}</span>
+                  <span className="hint">{hint}</span>
+                </span>
+                <HotkeyCapture
+                  label={`Raccourci pour ${label}`}
+                  value={acceleratorFor(hotkeys, action)}
+                  onChange={(acc) => bind(action, acc)}
+                  conflict={(acc) => {
+                    const c = conflictFor(hotkeys, action, acc);
+                    return c ? `Pris par ${describeAction(c.action, snapshot)} : réassigné ici.` : null;
+                  }}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+
+      <section className="settings-section" aria-labelledby="set-ai">
+        <h2 className="section-title" id="set-ai">Voix IA</h2>
+        <p className="setting-line">
+          <span className="tag-ai">{BACKEND_LABEL[aiBackend.backend]}</span>
+          <span>{aiBackend.deviceName}</span>
+        </p>
+        <p className="hint">
+          {aiBackend.backend === "cpu"
+            ? "Aucun GPU compatible : la conversion IA tourne sur le processeur, attends-toi à beaucoup de latence."
+            : "Conversion RVC accélérée par ta carte graphique, 100 % en local."}
+        </p>
+        <div>
+          <h3 className="section-title">Réglages IA</h3>
+          <p className="hint">Communs à toutes les voix IA ; aussi dans le panneau de chaque voix IA, sur l'écran Voix.</p>
+        </div>
+        <RvcSettings />
+      </section>
+
+      <section className="settings-section" aria-labelledby="set-sounds">
+        <h2 className="section-title" id="set-sounds">Sons</h2>
+        <Slider
+          label="Vers le micro"
+          hint="Ce que les autres entendent."
+          value={settings.soundMicVolume}
+          min={0}
+          max={1}
+          step={0.01}
+          format={pct}
+          onChange={(soundMicVolume) => patchSettings({ soundMicVolume })}
+        />
+        <Slider
+          label="Dans mon casque"
+          hint="Ce que tu entends."
+          value={settings.soundMonitorVolume}
+          min={0}
+          max={1}
+          step={0.01}
+          format={pct}
+          onChange={(soundMonitorVolume) => patchSettings({ soundMonitorVolume })}
+        />
+      </section>
+
+      <section className="settings-section" aria-labelledby="set-about">
+        <h2 className="section-title" id="set-about">À propos</h2>
+        <p>VoxBox 0.1 · ta voix est traitée uniquement sur ton PC. Seul l’onglet MyInstants utilise Internet.</p>
+        <p className="about__credit">
+          VB-CABLE est un donationware de VB-Audio (
+          <a href="https://www.vb-cable.com" target="_blank" rel="noreferrer">www.vb-cable.com</a>
+          ), toutes les participations sont les bienvenues.
+        </p>
+        <p className="hint">Sons en ligne fournis par MyInstants. Licence de chaque voix IA fournie : dans son panneau, sur l'écran Voix.</p>
+        <p>
+          <button type="button" className="link-btn" onClick={() => void call("open_logs_folder", {})}>
+            Ouvrir le dossier des journaux
+          </button>
+        </p>
+      </section>
     </section>
   );
 }
 
-function DeviceSelect({ label, hint, icon, devices, value, defaultLabel, onChange }: {
+function DeviceSelect({ label, hint, devices, value, defaultLabel, onChange }: {
   label: string;
   hint: string;
-  icon: "mic" | "radio" | "headphones";
   devices: DeviceInfo[];
   value: string | null;
   defaultLabel: string;
@@ -215,9 +282,7 @@ function DeviceSelect({ label, hint, icon, devices, value, defaultLabel, onChang
   const missing = value !== null && !devices.some((d) => d.id === value);
   return (
     <div className="field device">
-      <label className="label" htmlFor={id}>
-        <PixelIcon name={icon} scale={1} /> {label}
-      </label>
+      <label className="label" htmlFor={id}>{label}</label>
       <select
         id={id}
         className="input"
