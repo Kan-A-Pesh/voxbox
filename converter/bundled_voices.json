@@ -1,0 +1,24 @@
+[
+  {
+    "id": "vctk-p231",
+    "name": "Voix anglaise féminine — VCTK p231",
+    "sourceUrl": "https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/005c2f948ee9dafd7e3aa7f261b4c3a24beebeef/F/p231/rmvpe/Fp231rmvpe.pth",
+    "license": "Apache-2.0 (model); CC-BY-4.0 (VCTK training corpus)",
+    "sha256": "12f819e129c6e48779439e491b85593b8819d094f751c3515ea13be6bd8b5a59",
+    "modelCard": "https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/blob/005c2f948ee9dafd7e3aa7f261b4c3a24beebeef/README.md",
+    "trainingData": "https://datashare.ed.ac.uk/handle/10283/3443",
+    "attribution": "Model: Nekochu. Corpus: Yamagishi, Junichi; Veaux, Christophe; MacDonald, Kirsten. CSTR VCTK Corpus v0.92, University of Edinburgh (2019), CC BY 4.0.",
+    "sampleRate": 40000
+  },
+  {
+    "id": "vctk-p226",
+    "name": "Voix anglaise masculine — VCTK p226",
+    "sourceUrl": "https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/resolve/005c2f948ee9dafd7e3aa7f261b4c3a24beebeef/M/p226/rmvpe/Mp226rmvpe.pth",
+    "license": "Apache-2.0 (model); CC-BY-4.0 (VCTK training corpus)",
+    "sha256": "0a1d55e17cf08c922596710e58a0862cb54c8ea2ab037a5fc1f85c5f08ab4b18",
+    "modelCard": "https://huggingface.co/Nekochu/RVC-VCTK_Voice-sample/blob/005c2f948ee9dafd7e3aa7f261b4c3a24beebeef/README.md",
+    "trainingData": "https://datashare.ed.ac.uk/handle/10283/3443",
+    "attribution": "Model: Nekochu. Corpus: Yamagishi, Junichi; Veaux, Christophe; MacDonald, Kirsten. CSTR VCTK Corpus v0.92, University of Edinburgh (2019), CC BY 4.0.",
+    "sampleRate": 40000
+  }
+]

@@ -1,0 +1,24 @@
+# Python 3.11 x64. CPU-only export; no CUDA installation or network at use time.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0+cpu
+numpy==1.26.4
+faiss-cpu==1.10.0
+onnx==1.17.0
+scipy==1.15.2
+# Fix torch/ONNX runtime dependencies for reproducible embedded packaging.
+protobuf==5.29.4
+sympy==1.13.1
+filelock==3.18.0
+fsspec==2025.3.0
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+networkx==3.4.2
+typing_extensions==4.12.2
+packaging==24.2
+mpmath==1.3.0
+# Validate dynamic frame lengths immediately after export, before publishing a model.
+onnxruntime==1.22.0
+coloredlogs==15.0.1
+humanfriendly==10.0
+flatbuffers==25.2.10
+pyreadline3==3.5.4; sys_platform == "win32"
