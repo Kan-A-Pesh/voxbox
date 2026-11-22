@@ -60,6 +60,17 @@ export function SettingsScreen() {
               message="Sans ce câble audio virtuel, Discord et tes jeux ne peuvent pas recevoir ta voix modifiée. Relance l'installateur de VoxBox : il réinstalle VB-Cable. Redémarre ensuite ton PC."
             />
           ) : null}
+          {!status.running && status.lastError ? (
+            <ErrorPanel
+              title={status.restarting ? "Le son est coupé, nouvelle tentative automatique" : "Le son est coupé"}
+              message={status.lastError}
+              action={
+                <button type="button" className="btn btn--small btn--ghost" onClick={() => void call("open_logs_folder", {})}>
+                  Ouvrir le dossier des journaux
+                </button>
+              }
+            />
+          ) : null}
 
           <div className="panel stack">
             <div className="panel__head">
@@ -74,7 +85,11 @@ export function SettingsScreen() {
               <>
                 <DeviceSelect
                   label="Micro"
-                  hint="Le micro que tu utilises vraiment."
+                  hint={
+                    status.running && status.fallback
+                      ? `Tes périphériques choisis sont indisponibles : ceux du système sont utilisés en attendant (micro « ${status.inputName ?? "par défaut"} »). VoxBox y revient tout seul dès qu'ils sont branchés.`
+                      : "Le micro que tu utilises vraiment."
+                  }
                   icon="mic"
                   devices={devices.inputs.filter((d) => !d.isCable)}
                   value={settings.devices.input}

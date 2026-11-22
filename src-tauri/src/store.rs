@@ -125,7 +125,8 @@ impl AppSettings {
 /// Commits a settings change and publishes the result to the engine under the
 /// same lock, so two concurrent changes can never leave the engine on an older
 /// value than the one saved (e.g. push-to-talk saved on, microphone left open).
-/// `publish` must be quick (engine atomics) and must not take the store lock.
+/// `publish` runs even when the change is rejected (with the saved settings);
+/// it must be quick (engine atomics) and must not take the store lock.
 pub fn commit_and_publish<E: From<StoreError> + std::fmt::Display>(
     store: &parking_lot::Mutex<Store>,
     change: impl FnOnce(&mut AppSettings),
@@ -140,9 +141,10 @@ pub fn commit_and_publish<E: From<StoreError> + std::fmt::Display>(
     if let Some(devices) = devices {
         next.devices = devices;
     }
-    store.commit_settings(next, devices_changed, open)?;
+    let result = store.commit_settings(next, devices_changed, open);
+    // Also after a failure: what is published always matches what is saved.
     publish(&store.settings);
-    Ok(store.settings.clone())
+    result.map(|()| store.settings.clone())
 }
 
 /// Drops saved devices that are no longer plugged in (back to "system default" /
@@ -939,6 +941,35 @@ mod tests {
         assert!(matches!(result, Err(StoreError::Write { .. })));
         assert!(!s.settings.monitor);
         assert!(!saved(dir.path()).monitor);
+    }
+
+    #[test]
+    fn a_rejected_change_still_publishes_the_saved_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = parking_lot::Mutex::new(Store::open(dir.path()).unwrap());
+        let saved = commit_and_publish(
+            &store,
+            |_| {},
+            Some(devices("speakers")),
+            |_| Ok::<(), StoreError>(()),
+            |_| {},
+        )
+        .unwrap()
+        .devices;
+        let mut published = Vec::new();
+        let result = commit_and_publish(
+            &store,
+            |_| {},
+            Some(devices("unplugged")),
+            |_| Err(StoreError::Other("refusé".into())),
+            |s| published.push(s.devices.clone()),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            published,
+            vec![saved],
+            "the engine target goes back to the saved devices"
+        );
     }
 
     /// The store lock is still held while the engine receives the new values, so

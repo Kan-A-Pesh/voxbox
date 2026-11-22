@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, CommandArgs, CommandName, CommandResult } from "../ipc/backend";
-import type { AppSettings, Snapshot } from "../ipc/contract";
+import type { AppSettings, Snapshot, EngineStatus } from "../ipc/contract";
 import { getBackend } from "../ipc/client";
 
 export interface Toast { id: number; kind: "info" | "error"; message: string }
@@ -19,6 +19,11 @@ interface Store {
 }
 
 const Ctx = createContext<Store | null>(null);
+
+/** Keeps the newest engine status: reads can resolve out of order. */
+export function newerStatus(current: EngineStatus, incoming: EngineStatus): EngineStatus {
+  return incoming.revision >= current.revision ? incoming : current;
+}
 
 export function errorMessage(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -44,7 +49,9 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
         if (cancelled) return;
         setLoad({ kind: "ready", backend, snapshot });
         unlisten = await backend.listen("snapshot-changed", (s) =>
-          setLoad((prev) => (prev.kind === "ready" ? { ...prev, snapshot: s } : prev)),
+          setLoad((prev) =>
+            prev.kind === "ready" ? { ...prev, snapshot: { ...s, status: newerStatus(prev.snapshot.status, s.status) } } : prev,
+          ),
         );
         if (cancelled) unlisten();
       } catch (e) {
@@ -104,7 +111,7 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
       const fresh = await backend?.invoke("get_snapshot", {}).catch(() => null);
       setSnapshot((s) =>
         fresh
-          ? { ...s, settings: fresh.settings, status: fresh.status }
+          ? { ...s, settings: fresh.settings, status: newerStatus(s.status, fresh.status) }
           : { ...s, settings: { ...s.settings, ...revert(before, patch) } },
       );
     },
