@@ -40,6 +40,19 @@ impl AudioIo {
         }
     }
 }
+/// Whether every explicitly chosen device of `selection` is currently present
+/// ("system default" and auto-detected cable always count as present).
+pub(crate) fn selection_available(selection: &DeviceSelection) -> bool {
+    let devices = enumerate();
+    let has = |id: &Option<String>, list: &[crate::DeviceInfo]| {
+        id.as_ref()
+            .is_none_or(|id| list.iter().any(|d| &d.id == id))
+    };
+    has(&selection.input, &devices.inputs)
+        && has(&selection.cable, &devices.outputs)
+        && has(&selection.monitor, &devices.outputs)
+}
+
 pub(crate) fn is_cable(name: &str) -> bool {
     name.to_ascii_lowercase().contains("cable input")
 }
@@ -146,35 +159,42 @@ impl Streams {
         if cable.is_none() && monitor.is_none() {
             return Err(EngineError::DeviceNotFound("sortie audio".into()));
         }
-        let input_config = input.default_input_config().map_err(stream_error)?;
+        // Every failure names the device it came from, so the UI can say which one.
+        let at = |role: &str, device: &Device| {
+            let label = format!("{role} « {} »", name(device));
+            move |e: EngineError| EngineError::Stream(format!("{label} : {e}"))
+        };
+        let input_config = input
+            .default_input_config()
+            .map_err(stream_error)
+            .map_err(at("Micro", &input))?;
         let mut streams = Vec::with_capacity(3);
-        let (stream, input_buffer_ms) = input_stream(&input, input_config, io)?;
-        streams.push(stream);
+        let (stream, input_buffer_ms) =
+            input_stream(&input, input_config, io).map_err(at("Micro", &input))?;
+        streams.push((stream, at("Micro", &input)));
         let mut output_buffer_ms = 0;
-        if let Some(device) = &cable {
-            let (stream, ms) = output_stream(
-                device,
-                device.default_output_config().map_err(stream_error)?,
-                Arc::clone(&io.cable),
-                io,
-            )?;
-            output_buffer_ms = ms;
-            streams.push(stream);
-        }
-        if let Some(device) = &monitor {
-            let (stream, _) = output_stream(
-                device,
-                device.default_output_config().map_err(stream_error)?,
-                Arc::clone(&io.monitor),
-                io,
-            )?;
-            streams.push(stream);
+        for (device, queue, role) in [
+            (&cable, &io.cable, "Sortie VB-Cable"),
+            (&monitor, &io.monitor, "Casque"),
+        ] {
+            let Some(device) = device else { continue };
+            let config = device
+                .default_output_config()
+                .map_err(stream_error)
+                .map_err(at(role, device))?;
+            let (stream, ms) =
+                output_stream(device, config, Arc::clone(queue), io).map_err(at(role, device))?;
+            if role == "Sortie VB-Cable" {
+                output_buffer_ms = ms;
+            }
+            streams.push((stream, at(role, device)));
         }
         io.clear();
         io.failed.store(false, Ordering::Release);
-        for stream in &streams {
-            stream.play().map_err(stream_error)?;
+        for (stream, at) in &streams {
+            stream.play().map_err(stream_error).map_err(at)?;
         }
+        let streams = streams.into_iter().map(|(stream, _)| stream).collect();
         Ok(Self {
             _streams: streams,
             status: EngineStatus {
@@ -184,8 +204,35 @@ impl Streams {
                 monitor_name: monitor.as_ref().map(name),
                 cable_found,
                 latency_ms: input_buffer_ms.max(10) + 5 + 2 + output_buffer_ms,
+                last_error: None,
+                restarting: false,
+                fallback: false,
+                revision: 0,
             },
         })
+    }
+}
+
+/// Some WASAPI drivers refuse the short fixed period VoxBox asks for: retry with
+/// the driver's own buffer size (latency estimated at 10 ms) before giving up.
+fn with_buffer_fallback(
+    config: cpal::StreamConfig,
+    fixed_ms: u32,
+    what: &str,
+    mut build: impl FnMut(cpal::StreamConfig) -> Result<cpal::Stream>,
+) -> Result<(cpal::Stream, u32)> {
+    match build(config) {
+        Ok(stream) => Ok((stream, fixed_ms)),
+        Err(fixed_error) => {
+            tracing::warn!(
+                "{what} : tampon court refusé ({fixed_error}), essai avec le tampon du pilote"
+            );
+            let mut default = config;
+            default.buffer_size = cpal::BufferSize::Default;
+            build(default)
+                .map(|stream| (stream, 10))
+                .map_err(|_| fixed_error)
+        }
     }
 }
 
@@ -265,12 +312,22 @@ fn input_stream(
     io: &AudioIo,
 ) -> Result<(cpal::Stream, u32)> {
     let (config, ms) = config(&supported);
+    with_buffer_fallback(config, ms, "micro", |config| {
+        input_any(device, supported.sample_format(), config, io)
+    })
+}
+fn input_any(
+    device: &Device,
+    format: SampleFormat,
+    config: cpal::StreamConfig,
+    io: &AudioIo,
+) -> Result<cpal::Stream> {
     macro_rules! build {
         ($ty:ty) => {
-            input_typed::<$ty>(device, config, io).map(|s| (s, ms))
+            input_typed::<$ty>(device, config, io)
         };
     }
-    match supported.sample_format() {
+    match format {
         SampleFormat::F32 => build!(f32),
         SampleFormat::F64 => build!(f64),
         SampleFormat::I8 => build!(i8),
@@ -343,12 +400,29 @@ fn output_stream(
     io: &AudioIo,
 ) -> Result<(cpal::Stream, u32)> {
     let (config, ms) = config(&supported);
+    with_buffer_fallback(config, ms, "sortie", |config| {
+        output_any(
+            device,
+            supported.sample_format(),
+            config,
+            Arc::clone(&queue),
+            io,
+        )
+    })
+}
+fn output_any(
+    device: &Device,
+    format: SampleFormat,
+    config: cpal::StreamConfig,
+    queue: Arc<ArrayQueue<f32>>,
+    io: &AudioIo,
+) -> Result<cpal::Stream> {
     macro_rules! build {
         ($ty:ty) => {
-            output_typed::<$ty>(device, config, queue, io).map(|s| (s, ms))
+            output_typed::<$ty>(device, config, queue, io)
         };
     }
-    match supported.sample_format() {
+    match format {
         SampleFormat::F32 => build!(f32),
         SampleFormat::F64 => build!(f64),
         SampleFormat::I8 => build!(i8),

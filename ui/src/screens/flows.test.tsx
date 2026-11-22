@@ -1,8 +1,10 @@
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderApp } from "../test/render";
-import type { MockBackend } from "../ipc/mock";
+import { createMockBackend, type MockBackend } from "../ipc/mock";
+import { VoxProvider } from "../state/store";
+import { App } from "../App";
 import { SEARCH_DEBOUNCE_MS } from "./sounds/Explorer";
 import { BUILTIN_PRESETS } from "../ipc/generated/presets";
 
@@ -128,6 +130,7 @@ describe("sound edit flow", () => {
   it("imports dropped files", async () => {
     const { backend, callsOf } = renderApp("sounds");
     await screen.findByRole("button", { name: "Jouer Oof" });
+    await waitFor(() => expect(backend.hasDropListener()).toBe(true));
     act(() => backend.simulateDrop(["C:\\Sons\\Gong.ogg", "C:\\Sons\\notes.txt"]));
     expect(await screen.findByRole("button", { name: "Jouer Gong" })).toBeInTheDocument();
     expect(callsOf("import_sounds")[0]?.args).toEqual({ paths: ["C:\\Sons\\Gong.ogg"] });
@@ -268,6 +271,57 @@ describe("settings", () => {
     act(() => (backend as MockBackend).simulateDeviceLoss("Le périphérique audio a été déconnecté"));
     expect(await screen.findByText(/a été déconnecté/)).toBeInTheDocument();
     expect(await screen.findAllByText(/moteur arrêté/)).not.toHaveLength(0);
+  });
+
+  it("shows why the sound stopped, then clears it when the engine restarts on its own", async () => {
+    const user = userEvent.setup();
+    const { backend, callsOf } = renderApp("settings");
+    await screen.findByText(/\d+ ms/);
+    act(() => (backend as MockBackend).simulateDeviceLoss("Micro « Shure MV7 (USB) » : périphérique audio introuvable. Nouvelle tentative automatique…"));
+    const panel = (await screen.findByText("Le son est coupé, nouvelle tentative automatique")).closest("[role=alert]") as HTMLElement;
+    expect(within(panel).getByText(/Micro « Shure MV7 \(USB\) »/)).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Ouvrir le dossier des journaux" }));
+    expect(callsOf("open_logs_folder")).toHaveLength(1);
+
+    act(() => (backend as MockBackend).simulateRecovery());
+    expect(await screen.findByText("Son rétabli.")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText("Le son est coupé, nouvelle tentative automatique")).not.toBeInTheDocument());
+    expect(screen.queryAllByText(/moteur arrêté/)).toHaveLength(0);
+  });
+
+  it("updates the outage reason quietly when a retry identifies the failing device", async () => {
+    const { backend } = renderApp("settings");
+    await screen.findByText(/\d+ ms/);
+    act(() => (backend as MockBackend).simulateDeviceLoss("Un périphérique audio a été déconnecté. Nouvelle tentative automatique…"));
+    await screen.findByText("Le son est coupé, nouvelle tentative automatique");
+    act(() => (backend as MockBackend).simulateRetryFailure("Casque « Arctis 7 » : périphérique introuvable. Nouvelle tentative automatique…"));
+    const panel = (await screen.findByText(/Casque « Arctis 7 »/)).closest("[role=alert]") as HTMLElement;
+    expect(within(panel).queryByText(/a été déconnecté/)).not.toBeInTheDocument();
+    expect(screen.queryAllByText(/Casque « Arctis 7 » : périphérique introuvable/).filter((n) => !panel.contains(n))).toHaveLength(0);
+  });
+
+  it("reads the engine status again once it listens, so a restart during startup is not missed", async () => {
+    const backend = createMockBackend({ meters: false });
+    const listen = backend.listen.bind(backend);
+    vi.spyOn(backend, "listen").mockImplementation(((name: never, handler: never) =>
+      {
+        // The engine stops while the UI is still subscribing: its event is missed.
+        if ((name as string) === "engine") (backend as MockBackend).simulateDeviceLoss("Micro absent. Nouvelle tentative automatique…");
+        return listen(name, handler);
+      }) as typeof backend.listen);
+    render(
+      <VoxProvider backend={backend}>
+        <App initialScreen="settings" />
+      </VoxProvider>,
+    );
+    expect(await screen.findByText("Le son est coupé, nouvelle tentative automatique")).toBeInTheDocument();
+  });
+
+  it("says when the system defaults are used meanwhile, even if the startup notice was missed", async () => {
+    const { backend } = renderApp("settings");
+    await screen.findByText(/\d+ ms/);
+    act(() => (backend as MockBackend).simulateFallback("Microphone (Realtek)"));
+    expect(await screen.findByText(/Tes périphériques choisis sont indisponibles/)).toHaveTextContent("Microphone (Realtek)");
   });
 
   it("explains a missing VB-Cable", async () => {

@@ -41,6 +41,14 @@ export interface MockBackend extends Backend {
   simulateDrop(paths: string[]): void;
   /** Test hook: the engine stops after a device disappears (only an `engine` event, like the Rust runtime). */
   simulateDeviceLoss(message: string): void;
+  /** Test hook: the engine restarted on its own (only an `engine` event). */
+  simulateRecovery(): void;
+  /** Test hook: a retry found a more precise reason (quiet `statusChanged` event). */
+  simulateRetryFailure(message: string): void;
+  /** Test hook: running on the defaults because the saved devices are missing (quiet `statusChanged`). */
+  simulateFallback(inputName: string): void;
+  /** Test hook: true once a screen listens to OS file drops. */
+  hasDropListener(): boolean;
   /** Invocation log, oldest first. */
   calls: { cmd: CommandName; args: unknown }[];
   dispose(): void;
@@ -82,6 +90,10 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       monitorName: "Casque (Arctis 7)",
       cableFound,
       latencyMs: 18,
+      lastError: null,
+      restarting: false,
+      fallback: false,
+      revision: 0,
     },
     voices: clone([...BUILTIN_VOICES, ...AI_VOICES, ...CUSTOM_VOICES]),
     effectCatalog: clone(EFFECT_CATALOG),
@@ -309,6 +321,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
         }, aiImportStepMs);
         timers.add(timer);
       }),
+    open_logs_folder: () => null,
     delete_ai_model: ({ id }) => {
       const m = state.aiModels.find((x) => x.id === id);
       if (!m) throw new Error(`Modèle introuvable : ${id}`);
@@ -354,8 +367,23 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       emit("snapshot-changed", state);
     },
     simulateDeviceLoss(message) {
-      state.status = { ...state.status, running: false };
+      state.status = { ...state.status, running: false, lastError: message, restarting: true, revision: state.status.revision + 1 };
       emit("engine", { type: "deviceError", message });
+    },
+    simulateRecovery() {
+      state.status = { ...state.status, running: true, lastError: null, restarting: false, revision: state.status.revision + 1 };
+      emit("engine", { type: "recovered", message: "Son rétabli." });
+    },
+    simulateRetryFailure(message) {
+      state.status = { ...state.status, running: false, lastError: message, restarting: true, revision: state.status.revision + 1 };
+      emit("engine", { type: "statusChanged" });
+    },
+    simulateFallback(inputName) {
+      state.status = { ...state.status, running: true, fallback: true, inputName, revision: state.status.revision + 1 };
+      emit("engine", { type: "statusChanged" });
+    },
+    hasDropListener() {
+      return dropListeners.size > 0;
     },
     simulateDrop(paths) {
       dropListeners.forEach((h) => h({ type: "over" }));

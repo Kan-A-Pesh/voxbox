@@ -62,5 +62,5 @@ Pour écouter une voix sans lancer l'app : `cargo run -p voxbox-dsp --example re
 3. Activer « M'entendre » avec un casque : la voix modifiée doit s'entendre, avec un retard acceptable.
 4. Raccourcis : Ctrl+Alt+1..9 en jeu, Ctrl+Alt+V pour couper la voix, push-to-talk maintenu.
 5. Sons : glisser un mp3, le jouer (il doit s'entendre dans Discord et dans le casque), tester boucle et stop. Ajouter un son depuis MyInstants.
-6. Débrancher puis rebrancher le casque : un message s'affiche, puis l'app repart après avoir resélectionné le casque dans Réglages.
+6. Débrancher le casque sans rien toucher : un message nomme le périphérique en cause. Le rebrancher : en quelques secondes « Son rétabli. » s'affiche tout seul, et Réglages montre de nouveau le casque et le micro choisis (si un autre micro est utilisé en attendant, Réglages le signale). En cas de souci, le journal est dans `%APPDATA%\com.voxbox.app\logs\voxbox.log`.
 7. Pack Voix IA : voix « VCTK p231 », vérifier le backend affiché (DirectML) et la latence, puis importer un `.pth`.

@@ -8,13 +8,46 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 use crate::state::{AppState, Resources};
 
-pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
-        )
-        .init();
+/// Log file: `<app data>/logs/voxbox.log`. The release build has no console, so
+/// this is the only place an engine failure is written down. The previous file
+/// is kept as `voxbox.old.log` once it passes 5 MB.
+fn init_logging(dir: &std::path::Path) {
+    let filter =
+        || tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let file = std::fs::create_dir_all(dir).and_then(|()| {
+        let path = dir.join("voxbox.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
+            std::fs::rename(&path, dir.join("voxbox.old.log"))?;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+    });
+    let result = match file {
+        Ok(file) => tracing_subscriber::fmt()
+            .with_env_filter(filter())
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(file))
+            .try_init(),
+        Err(e) => {
+            eprintln!("journal VoxBox indisponible ({}) : {e}", dir.display());
+            tracing_subscriber::fmt()
+                .with_env_filter(filter())
+                .try_init()
+        }
+    };
+    if let Err(e) = result {
+        eprintln!("journal VoxBox non initialisé : {e}");
+    }
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("plantage : {info}");
+        previous(info);
+    }));
+}
 
+pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app)
@@ -22,19 +55,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
+            init_logging(&data_dir.join("logs"));
+            tracing::info!("VoxBox {} démarre", env!("CARGO_PKG_VERSION"));
             let resources = Resources::from_dir(&app.path().resource_dir()?.join("resources"));
-            let mut store = store::Store::open(&data_dir)?;
-            let devices = store::sanitize_devices(
-                store.settings.devices.clone(),
-                &voxbox_engine::list_devices(),
-            );
-            if devices != store.settings.devices {
-                tracing::warn!(
-                    "périphériques enregistrés absents : retour aux périphériques par défaut"
-                );
-                store.settings.devices = devices.clone();
-                store.save_settings()?;
-            }
+            let store = store::Store::open(&data_dir)?;
+            // Saved devices are kept even if unplugged right now: the engine
+            // runs on the defaults meanwhile and switches back when they return.
+            let devices = store.settings.devices.clone();
             let start_minimized = store.settings.start_minimized;
 
             let handle = app.handle().clone();
@@ -103,6 +130,7 @@ pub fn run() {
             commands::set_hotkey,
             commands::import_ai_model,
             commands::delete_ai_model,
+            commands::open_logs_folder,
         ])
         .run(tauri::generate_context!())
         .expect("VoxBox n'a pas pu démarrer");
