@@ -10,10 +10,12 @@ Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le trait
 
 ## Installation (utilisateur)
 
-1. Lancer `VoxBox_x.y.z_x64-setup.exe` (artefact `voxbox-installer` de la CI Windows). L'installeur propose d'installer **VB-CABLE**, qui crée le micro virtuel. Redémarrer ensuite le PC.
-2. Optionnel : lancer `VoxBox-Voix-IA-setup.exe` (artefact `voxbox-ai-pack` du workflow « AI voices pack ») pour ajouter les voix IA.
+1. Télécharger `VoxBox_x.y.z_x64-setup.exe` dans la dernière release du dépôt (onglet **Releases** : une nouvelle version est publiée à chaque merge sur `main` ; seule exception, si un merge plus récent modifie les workflows pendant le build d'un merge, celui-ci est publié dans la release du suivant), puis le lancer. L'installeur propose d'installer **VB-CABLE**, qui crée le micro virtuel. Redémarrer ensuite le PC.
+2. Optionnel : télécharger `VoxBox-Voix-IA-setup.exe` dans la release **« VoxBox - Voix IA N »** au numéro le plus élevé, et le lancer pour ajouter les voix IA. Une nouvelle release du pack est publiée quand il change (ou via le workflow « AI voices pack » lancé à la main).
 3. Dans Discord, OBS ou le jeu, choisir **« CABLE Output (VB-Audio Virtual Cable) »** comme micro.
 4. Dans VoxBox → Réglages, vérifier le micro réel et le casque.
+
+**Mettre à jour** : quitter VoxBox (clic droit sur l'icône près de l'horloge → Quitter), puis lancer le `setup.exe` de la dernière release par-dessus. Les réglages, voix et sons (`%APPDATA%\com.voxbox.app`) sont conservés ; VB-CABLE n'a pas besoin d'être réinstallé.
 
 ## Architecture
 
