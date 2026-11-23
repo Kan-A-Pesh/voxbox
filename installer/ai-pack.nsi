@@ -8,7 +8,9 @@ Name "VoxBox - Voix IA"
 OutFile "${OUT_FILE}"
 RequestExecutionLevel admin
 InstallDir "$PROGRAMFILES64\VoxBox"
-SetCompressor /SOLID lzma
+; Non-solid: a solid block of the whole pack (> 1 GB) exhausts 32-bit makensis
+; ("error mmapping datablock"). Per-file LZMA stays well within its limits.
+SetCompressor lzma
 
 !define MUI_DIRECTORYPAGE_TEXT_TOP "Choisissez le dossier où VoxBox est installé. Le pack ajoute les voix IA (RVC), le moteur ONNX Runtime + DirectML (cartes NVIDIA et AMD) et le convertisseur de modèles .pth."
 !insertmacro MUI_PAGE_DIRECTORY
