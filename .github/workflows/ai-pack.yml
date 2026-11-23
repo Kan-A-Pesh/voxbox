@@ -1,10 +1,22 @@
 name: AI voices pack
 
-# Heavy (PyTorch CPU, ~1 GB): built on demand and for releases, not on every PR.
+# Heavy (PyTorch CPU, ~1 GB): rebuilt only when the pack changes or on demand,
+# then published as its own release « VoxBox - Voix IA N » (tag ai-pack-N).
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+    paths:
+      - scripts/build_ai_pack.ps1
+      - installer/ai-pack.nsi
+      - converter/**
+      - scripts/publish_release.sh
+      # Any workflow change: a pack release skipped because the workflows
+      # changed meanwhile is rebuilt by this newer run.
+      - .github/workflows/**
+
+# No concurrency group: each run publishes its own ai-pack-N release, so runs
+# never conflict, and a group would let a rerun evict a pending newer build.
 
 permissions:
   contents: read
@@ -28,3 +40,31 @@ jobs:
           name: voxbox-ai-pack
           path: VoxBox-Voix-IA-setup.exe
           if-no-files-found: error
+
+  publish:
+    name: Publish the « VoxBox - Voix IA » release
+    runs-on: ubuntu-latest
+    needs: ai-pack
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: voxbox-ai-pack
+          path: pack
+      # One release per build, never replaced: no window without an installer,
+      # and a rerun of an older run cannot overwrite a newer pack.
+      - name: Publish ai-pack-${{ github.run_number }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+        run: >-
+          ./scripts/publish_release.sh "ai-pack-${{ github.run_number }}"
+          "VoxBox - Voix IA ${{ github.run_number }}"
+          "Pack optionnel des voix IA. Installer VoxBox d'abord (dernière release), puis lancer VoxBox-Voix-IA-setup.exe."
+          pack/VoxBox-Voix-IA-setup.exe

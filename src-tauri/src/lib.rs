@@ -56,7 +56,7 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             init_logging(&data_dir.join("logs"));
-            tracing::info!("VoxBox {} démarre", env!("CARGO_PKG_VERSION"));
+            tracing::info!("VoxBox {} démarre", app.package_info().version);
             let resources = Resources::from_dir(&app.path().resource_dir()?.join("resources"));
             let store = store::Store::open(&data_dir)?;
             // Saved devices are kept even if unplugged right now: the engine
