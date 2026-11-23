@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import type { AiBackend, DeviceInfo, DeviceSelection, Devices, HotkeyAction } from "../ipc/contract";
 import { errorMessage, useVox } from "../state/store";
+import { useUpdates } from "../state/updates";
 import { acceleratorFor, conflictFor, describeAction, reconcileSoundHotkeys } from "../lib/hotkeys";
 import { ErrorPanel, Slider, Toggle } from "../components/Controls";
 import { HotkeyCapture } from "../components/HotkeyCapture";
@@ -253,7 +254,8 @@ export function SettingsScreen() {
 
       <section className="settings-section" aria-labelledby="set-about">
         <h2 className="section-title" id="set-about">À propos</h2>
-        <p>VoxBox 0.1 · ta voix est traitée uniquement sur ton PC. Seul l’onglet MyInstants utilise Internet.</p>
+        <AboutVersion />
+        <p>Ta voix est traitée uniquement sur ton PC. Seuls l’onglet MyInstants et la recherche de mises à jour utilisent Internet.</p>
         <p className="about__credit">
           VB-CABLE est un donationware de VB-Audio (
           <a href="https://www.vb-cable.com" target="_blank" rel="noreferrer">www.vb-cable.com</a>
@@ -300,6 +302,32 @@ function DeviceSelect({ label, hint, devices, value, defaultLabel, onChange }: {
       </select>
       <p className="hint" id={`${id}-hint`}>
         {missing ? "Ce périphérique n'est plus branché : rebranche-le ou choisis-en un autre." : hint}
+      </p>
+    </div>
+  );
+}
+
+function AboutVersion() {
+  const { currentVersion, phase, manual, checkNow, openDialog } = useUpdates();
+  const pending = phase.kind !== "none" ? phase.update.version : null;
+  const installing = phase.kind === "installing";
+  return (
+    <div className="about__version">
+      <p>
+        VoxBox <span className="mono">{currentVersion ?? "…"}</span>
+      </p>
+      {pending ? (
+        <button type="button" className="btn btn--small btn--primary" onClick={openDialog}>
+          Installer la version {pending}
+        </button>
+      ) : null}
+      {/* Still available with an update pending: the release may have been withdrawn or superseded. */}
+      <button type="button" className="btn btn--small" disabled={manual.kind === "checking" || installing} onClick={checkNow}>
+        {manual.kind === "checking" ? "Recherche…" : "Rechercher une mise à jour"}
+      </button>
+      <p className="hint" role="status">
+        {manual.kind === "upToDate" && !pending ? "Tu as la dernière version." : null}
+        {manual.kind === "failed" ? `Recherche impossible : ${manual.message}` : null}
       </p>
     </div>
   );

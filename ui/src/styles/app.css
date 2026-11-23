@@ -544,6 +544,49 @@ div.identity { align-items: center; }
 .hk-row__text { display: flex; flex-direction: column; gap: 2px; }
 .hk-row .hotkey { flex: none; width: 220px; }
 .about__credit { max-width: 60ch; }
+.about__version { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.about__version .hint { flex-basis: 100%; }
+.about__version .hint:empty { display: none; }
+
+/* ---- updates ------------------------------------------------------------- */
+.update-banner {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px var(--page-x);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.update-banner__dot { width: 8px; height: 8px; flex: none; background: var(--violet); }
+
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: var(--z-overlay);
+  display: grid; place-items: center;
+  padding: 24px;
+  background: rgb(10 12 28 / 0.8);
+  animation: fade-in 160ms var(--ease);
+}
+.modal {
+  width: min(440px, 100%);
+  display: flex; flex-direction: column; gap: 16px;
+  padding: 24px;
+  background: var(--raise);
+  box-shadow: 0 0 0 1px var(--line-strong), 0 16px 40px rgb(0 0 0 / 0.45);
+  animation: modal-in 200ms var(--ease);
+}
+.modal:focus { outline: none; }
+.modal__title { font-size: 17px; font-weight: 500; text-wrap: balance; }
+.modal__body { display: flex; flex-direction: column; gap: 12px; color: var(--cream); }
+.modal__body p { max-width: 60ch; }
+.modal__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(6px) scale(0.98); } }
+/* After the rules above: same specificity, so the later declaration wins. */
+@media (prefers-reduced-motion: reduce) {
+  .modal, .modal-backdrop { animation: none; }
+}
 
 .hotkey { display: flex; flex-direction: column; gap: 4px; }
 .hotkey__row { display: flex; align-items: center; gap: 4px; }

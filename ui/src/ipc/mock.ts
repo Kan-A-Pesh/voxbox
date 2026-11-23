@@ -1,6 +1,6 @@
 // In-memory backend used when the UI runs outside Tauri (browser dev, screenshots, tests).
 // It mirrors the contract semantics of src-tauri/src/commands.rs closely enough to drive every screen.
-import type { Backend, CommandArgs, CommandName, CommandResult, EventName, FileDropEvent, Unlisten } from "./backend";
+import type { AvailableUpdate, Backend, CommandArgs, CommandName, CommandResult, EventName, FileDropEvent, Unlisten } from "./backend";
 import type { DeviceSelection, Devices, Events, RemoteSound, SearchPage, Snapshot, Sound, VoicePreset, HotkeyAction } from "./contract";
 import {
   AI_MODELS, AI_VOICES, BUILTIN_VOICES, CUSTOM_VOICES, EFFECT_CATALOG, HOTKEYS, MYINSTANTS_TITLES, SETTINGS, SOUNDS,
@@ -22,7 +22,20 @@ export interface MockOptions {
   aiImportStepMs?: number;
   /** Saved devices point to a USB headset that is no longer plugged in. */
   unpluggedHeadset?: boolean;
+  /** A newer release is published (null: this version is the latest). */
+  update?: MockUpdate | null;
 }
+
+export interface MockUpdate {
+  version: string;
+  /** The install fails with this message instead of restarting. */
+  failWith?: string;
+  /** Delay between download progress steps (ms). */
+  stepMs?: number;
+}
+
+/** Version the mock app runs. */
+export const MOCK_APP_VERSION = "0.1.41";
 
 /** Same rule as `sanitize_devices` in src-tauri/src/store.rs: unplugged devices go back to the default. */
 export function sanitizeDevices(selection: DeviceSelection, available: Devices): DeviceSelection {
@@ -39,6 +52,8 @@ export interface MockBackend extends Backend {
   simulateExternalChange(mutate: (s: Snapshot) => void): void;
   /** Test hook: simulate an OS file drop. */
   simulateDrop(paths: string[]): void;
+  /** Test hook: one OS drag-and-drop event on its own (over, leave or drop). */
+  simulateDragEvent(e: FileDropEvent): void;
   /** Test hook: the engine stops after a device disappears (only an `engine` event, like the Rust runtime). */
   simulateDeviceLoss(message: string): void;
   /** Test hook: the engine restarted on its own (only an `engine` event). */
@@ -51,6 +66,20 @@ export interface MockBackend extends Backend {
   hasDropListener(): boolean;
   /** Invocation log, oldest first. */
   calls: { cmd: CommandName; args: unknown }[];
+  /** Test hook: publish (or withdraw, with null) a newer release. */
+  setUpdate(update: MockUpdate | null): void;
+  /** Test hook: how many times the app checked for an update. */
+  updateChecks(): number;
+  /** Test hook: true once an update was installed and the app restarted. */
+  restarted(): boolean;
+  /** Test hook: most update checks ever running at the same time. */
+  maxConcurrentChecks(): number;
+  /** Test hook: how many update objects were released. */
+  releasedUpdates(): number;
+  /** Test hook: checks wait until the returned function is called. */
+  holdUpdateChecks(): () => void;
+  /** Test hook: installs stop after their download until the returned function is called. */
+  holdInstalls(): () => void;
   dispose(): void;
 }
 
@@ -77,6 +106,14 @@ function baseName(path: string) {
 
 export function createMockBackend(options: MockOptions = {}): MockBackend {
   const { latencyMs = 0, meters = true, aiImportStepMs = 120 } = options;
+  let published: MockUpdate | null = options.update ?? null;
+  let checks = 0;
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let releasedCount = 0;
+  let checkGate: Promise<void> | null = null;
+  let installGate: Promise<void> | null = null;
+  let hasRestarted = false;
   const cableFound = !options.cableMissing;
 
   const state: Snapshot = {
@@ -105,6 +142,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
 
   const listeners = new Map<EventName, Set<(p: never) => void>>();
   const dropListeners = new Set<(e: FileDropEvent) => void>();
+  const dispatchDrop = (e: FileDropEvent) => dropListeners.forEach((h) => h(e));
   const timers = new Set<ReturnType<typeof setInterval>>();
   const playing = new Map<string, ReturnType<typeof setInterval>>();
   const calls: MockBackend["calls"] = [];
@@ -382,13 +420,74 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       state.status = { ...state.status, running: true, fallback: true, inputName, revision: state.status.revision + 1 };
       emit("engine", { type: "statusChanged" });
     },
+    updates: {
+      currentVersion: async () => MOCK_APP_VERSION,
+      async check() {
+        checks++;
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        try {
+          if (checkGate) await checkGate;
+          await wait();
+        } finally {
+          inFlight--;
+        }
+        const update = published;
+        if (!update) return null;
+        let released = false;
+        const available: AvailableUpdate = {
+          version: update.version,
+          async install(onProgress) {
+            // Like the Tauri handle: unusable once released.
+            if (released) throw new Error("ressource de mise à jour fermée");
+            const total = 40_000_000;
+            for (let step = 1; step <= 4; step++) {
+              await new Promise((r) => setTimeout(r, update.stepMs ?? 0));
+              onProgress({ downloaded: (total / 4) * step, total, finished: step === 4 });
+            }
+            if (installGate) await installGate;
+            if (update.failWith) throw new Error(update.failWith);
+            hasRestarted = true;
+          },
+          async release() {
+            released = true;
+            releasedCount++;
+          },
+        };
+        return available;
+      },
+    },
+    setUpdate(update) {
+      published = update;
+    },
+    updateChecks: () => checks,
+    maxConcurrentChecks: () => maxInFlight,
+    releasedUpdates: () => releasedCount,
+    holdUpdateChecks() {
+      let open = () => {};
+      checkGate = new Promise<void>((r) => (open = r));
+      return () => {
+        checkGate = null;
+        open();
+      };
+    },
+    holdInstalls() {
+      let open = () => {};
+      installGate = new Promise<void>((r) => (open = r));
+      return () => {
+        installGate = null;
+        open();
+      };
+    },
+    restarted: () => hasRestarted,
     hasDropListener() {
       return dropListeners.size > 0;
     },
     simulateDrop(paths) {
-      dropListeners.forEach((h) => h({ type: "over" }));
-      dropListeners.forEach((h) => h({ type: "drop", paths }));
+      dispatchDrop({ type: "over" });
+      dispatchDrop({ type: "drop", paths });
     },
+    simulateDragEvent: dispatchDrop,
     dispose() {
       timers.forEach(clearInterval);
       playing.forEach(clearInterval);
