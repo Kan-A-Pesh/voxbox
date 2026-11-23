@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BottomBar } from "./components/BottomBar";
 import { Sidebar, type ScreenKey } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
+import { UpdateBanner } from "./components/UpdateBanner";
+import { UpdateDialog } from "./components/UpdateDialog";
+import { UpdatesProvider } from "./state/updates";
 import { newerStatus, useVox } from "./state/store";
 import { VoicesScreen } from "./screens/VoicesScreen";
 import { SoundsScreen } from "./screens/SoundsScreen";
@@ -17,6 +20,9 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
     leaveGuard.current = null;
     setScreen(next);
   };
+
+  // Installing an update restarts the app: same question as leaving the screen.
+  const canLeave = useCallback(() => !leaveGuard.current || leaveGuard.current(), []);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -51,15 +57,19 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
   }, [backend, notify, setSnapshot]);
 
   return (
-    <div className="app">
-      <Sidebar screen={screen} onNavigate={navigate} />
-      <main className="main" id="contenu">
-        {screen === "voices" && <VoicesScreen leaveGuardRef={leaveGuard} />}
-        {screen === "sounds" && <SoundsScreen />}
-        {screen === "settings" && <SettingsScreen />}
-      </main>
-      <BottomBar onOpenSettings={() => navigate("settings")} />
-      <Toasts />
-    </div>
+    <UpdatesProvider canLeave={canLeave}>
+      <div className="app">
+        <Sidebar screen={screen} onNavigate={navigate} />
+        <main className="main" id="contenu">
+          <UpdateBanner />
+          {screen === "voices" && <VoicesScreen leaveGuardRef={leaveGuard} />}
+          {screen === "sounds" && <SoundsScreen />}
+          {screen === "settings" && <SettingsScreen />}
+        </main>
+        <BottomBar onOpenSettings={() => navigate("settings")} />
+        <Toasts />
+        <UpdateDialog />
+      </div>
+    </UpdatesProvider>
   );
 }

@@ -17,6 +17,10 @@ export async function getBackend(): Promise<Backend> {
     backend = createMockBackend({
       myinstantsOffline: params.has("offline"),
       cableMissing: params.has("nocable"),
+      // ?update simulates a newer release, ?update=fail one whose install fails.
+      update: params.has("update")
+        ? { version: "0.1.42", stepMs: 400, failWith: params.get("update") === "fail" ? "téléchargement interrompu (réseau)" : undefined }
+        : null,
     });
   }
   return backend;

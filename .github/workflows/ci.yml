@@ -59,6 +59,10 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+      - name: Release manifest checks (scripts/updater_manifest.mjs)
+        run: node --test ../scripts/updater_manifest.test.mjs
+      - name: Release retry checks (scripts/publish_release.sh)
+        run: bash ../scripts/publish_release.test.sh
 
   windows:
     name: Windows build + installer
@@ -87,7 +91,8 @@ jobs:
       - name: Fetch VB-CABLE pack (AS IS, donationware)
         run: python scripts/fetch_vbcable.py
       # Every push to main ships a higher version, so the installer upgrades the
-      # installed app. Pull requests keep the version from tauri.conf.json.
+      # installed app, and is signed for the in-app updater. Pull requests keep
+      # the version from tauri.conf.json and are not signed.
       - name: Version
         id: version
         shell: bash
@@ -95,18 +100,30 @@ jobs:
           base=$(node -p "require('./src-tauri/tauri.conf.json').version.split('.').slice(0, 2).join('.')")
           if [ "${{ github.event_name }}" != pull_request ] && [ "${{ github.ref }}" = refs/heads/main ]; then
             version="$base.${{ github.run_number }}"
+            signed=true
           else
             version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+            signed=false
           fi
-          echo "{\"version\": \"$version\"}" > src-tauri/tauri.version.json
+          echo "{\"version\": \"$version\", \"bundle\": {\"createUpdaterArtifacts\": $signed}}" > src-tauri/tauri.version.json
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
       - name: Build installer
         run: npx --yes @tauri-apps/cli@2 build --ci --config tauri.version.json
         working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ steps.version.outputs.signed == 'true' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+      - name: Verify signature, write latest.json
+        if: steps.version.outputs.signed == 'true'
+        shell: bash
+        run: node scripts/updater_manifest.mjs target/release/bundle/nsis "${{ steps.version.outputs.version }}" "${{ github.repository }}" src-tauri/tauri.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: voxbox-installer
-          path: target/release/bundle/nsis/*.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/latest.json
           if-no-files-found: error
 
   release:
@@ -130,7 +147,7 @@ jobs:
           REPO: ${{ github.repository }}
           TARGET_SHA: ${{ github.sha }}
           VERSION: ${{ needs.windows.outputs.version }}
-        run: ./scripts/publish_release.sh "v$VERSION" "VoxBox $VERSION" generate installer/*.exe
+        run: ./scripts/publish_release.sh "v$VERSION" "VoxBox $VERSION" generate installer/*-setup.exe installer/latest.json
 
   # Builds can finish out of order: "latest" always goes to the highest version
   # published so far. Serialized, and recomputed from every release each time,

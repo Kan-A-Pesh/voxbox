@@ -5,6 +5,9 @@
 ; as required by https://vb-audio.com/Services/licensing.htm.
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; In-app updates ($UpdateMode, set by Tauri's template from /UPDATE) never
+  ; offer VB-CABLE again: it is a first-install step, even if it was declined.
+  StrCmp $UpdateMode 1 vbcable_update 0
   IfFileExists "$SYSDIR\drivers\vbaudio_cable64_win10.sys" vbcable_present 0
   IfFileExists "$INSTDIR\resources\vbcable\VBCABLE_Setup_x64.exe" 0 vbcable_missing
     MessageBox MB_OKCANCEL|MB_ICONINFORMATION "VoxBox utilise VB-CABLE pour créer le micro virtuel « CABLE Output ».$\r$\n$\r$\nVB-CABLE est un donationware de VB-Audio (www.vb-cable.com), toutes les participations sont les bienvenues.$\r$\nUn usage professionnel en entreprise nécessite des licences VB-CABLE.$\r$\n$\r$\nOK : installer VB-CABLE maintenant (un redémarrage sera nécessaire).$\r$\nAnnuler : ne pas l'installer (VoxBox fonctionnera sans micro virtuel)." IDCANCEL vbcable_done
@@ -18,6 +21,9 @@
     Goto vbcable_done
   vbcable_present:
     DetailPrint "VB-CABLE est déjà installé."
+    Goto vbcable_done
+  vbcable_update:
+    DetailPrint "Mise à jour : étape VB-CABLE ignorée."
   vbcable_done:
 !macroend
 

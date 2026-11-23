@@ -1,6 +1,6 @@
 # VoxBox
 
-Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. La seule partie qui utilise Internet est l'onglet « MyInstants » de l'écran Sons ; chaque son ajouté est téléchargé et fonctionne ensuite hors ligne.
+Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. Seuls l'onglet « MyInstants » de l'écran Sons et la recherche de mises à jour (releases GitHub, au lancement puis toutes les 6 h) utilisent Internet ; chaque son ajouté est téléchargé et fonctionne ensuite hors ligne.
 
 - Trois écrans : **Voix**, **Sons**, **Réglages**. 22 voix prêtes à l'emploi (Villageois, Robot, Démon, Chipmunk, Géant, Radio, Cathédrale, Alien...) ; un panneau latéral de l'écran Voix sert à créer, dupliquer ou modifier ses voix à partir de 18 effets.
 - Voix IA RVC (ONNX Runtime + DirectML : cartes NVIDIA et AMD), import de modèles `.pth` + `.index` avec conversion intégrée (filtre IA de l'écran Voix), 2 voix fournies.
@@ -15,7 +15,11 @@ Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le trait
 3. Dans Discord, OBS ou le jeu, choisir **« CABLE Output (VB-Audio Virtual Cable) »** comme micro.
 4. Dans VoxBox → Réglages, vérifier le micro réel et le casque.
 
-**Mettre à jour** : quitter VoxBox (clic droit sur l'icône près de l'horloge → Quitter), puis lancer le `setup.exe` de la dernière release par-dessus. Les réglages, voix et sons (`%APPDATA%\com.voxbox.app`) sont conservés ; VB-CABLE n'a pas besoin d'être réinstallé.
+**Mettre à jour** : VoxBox vérifie au lancement puis toutes les 6 h s'il existe une release plus récente. Une pop-up la propose (une seule fois par version, puis une bannière en haut de l'app) ; « Mettre à jour » télécharge l'installeur, vérifie sa signature, l'installe et relance VoxBox tout seul. Windows demande une autorisation (« Oui ») pendant l'installation, car VoxBox est installé dans *Program Files*. VB-CABLE n'est jamais reproposé lors d'une mise à jour. Réglages → À propos affiche la version et permet de vérifier à la main. Les réglages, voix et sons (`%APPDATA%\com.voxbox.app`) et le pack Voix IA sont conservés.
+
+Les versions antérieures à la mise à jour intégrée se mettent à jour une dernière fois à la main : quitter VoxBox (clic droit sur l'icône près de l'horloge → Quitter), puis lancer le `setup.exe` de la dernière release par-dessus.
+
+Signature : la CI signe les installeurs de `main` avec le secret `TAURI_SIGNING_PRIVATE_KEY` et publie `latest.json` dans chaque release ; la clé publique est dans `src-tauri/tauri.conf.json`. L'app n'accepte qu'un installeur dont la signature porte sa version (`requireSignedVersion`), et la CI refuse de publier une signature sans version. Retirer une release : la supprimer entière, fichiers compris (une pre-release garde son installeur téléchargeable par les apps qui l'ont déjà proposée), jamais seulement son `latest.json`, et ne jamais relancer le run CI qui l'a construite (il la republierait) ; pour la remplacer, merger un correctif sur `main`, qui publie une version plus haute. `releases/latest` sert alors le `latest.json` de la release précédente et l'offre disparaît des apps, à condition que cette release en ait un (celles d'avant les mises à jour intégrées n'en ont pas : l'offre reste alors jusqu'à la release suivante). Un `latest.json` manquant ne se distingue pas d'une panne de GitHub : l'app garde l'offre en cours et signale que la recherche a échoué. Si la clé privée est perdue, en générer une nouvelle (`npx @tauri-apps/cli signer generate`), remplacer le secret et la clé publique : les apps déjà installées devront être réinstallées une fois à la main.
 
 ## Architecture
 
@@ -41,7 +45,7 @@ cd src-tauri && npx @tauri-apps/cli@2 dev                         # app complèt
 python scripts/fetch_vbcable.py && cd src-tauri && npx @tauri-apps/cli@2 build   # installeur
 ```
 
-L'interface accepte des paramètres d'URL dans le navigateur : `?screen=voices|sounds|settings`, `?offline`, `?nocable`.
+L'interface accepte des paramètres d'URL dans le navigateur : `?screen=voices|sounds|settings`, `?offline`, `?nocable`, `?update` (une version plus récente est publiée), `?update=fail` (son installation échoue).
 Pour écouter une voix sans lancer l'app : `cargo run -p voxbox-dsp --example render -- villager in.wav out.wav`.
 
 ## Licences et attributions

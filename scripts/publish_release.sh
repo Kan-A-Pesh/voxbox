@@ -49,16 +49,30 @@ ensure_tag() {
 }
 
 # A rerun of a run that already published (or was interrupted while
-# publishing, which leaves a draft): add what is missing, then publish.
+# publishing, which leaves a draft): complete it, then publish.
 if gh release view "$tag" --repo "$REPO" > /dev/null 2>&1; then
   present=$(gh release view "$tag" --repo "$REPO" --json assets --jq '.assets[] | select(.state == "uploaded") | .name')
+  draft=$(gh release view "$tag" --repo "$REPO" --json isDraft --jq .isDraft)
+  complete=true
   for file in "$@"; do
     if ! grep -qxF "$(basename "$file")" <<< "$present"; then
-      gh release upload "$tag" "$file" --repo "$REPO" --clobber
+      complete=false
     fi
   done
-  draft=$(gh release view "$tag" --repo "$REPO" --json isDraft --jq .isDraft)
+  # The files of one release belong together (an installer and the manifest holding its
+  # signature), and a rerun rebuilds them. A release is only ever published once all of
+  # one build's files are up, so a published, complete release is never touched. A
+  # published one missing a file goes back to draft first: it is then repaired like any
+  # draft, where every retry replaces all files with its own build's (manifest last),
+  # overwriting whatever an interrupted retry left behind.
+  if [ "$draft" != true ] && [ "$complete" = false ]; then
+    gh release edit "$tag" --repo "$REPO" --draft=true
+    draft=true
+  fi
   if [ "$draft" = true ]; then
+    for file in "$@"; do
+      gh release upload "$tag" "$file" --repo "$REPO" --clobber
+    done
     ensure_tag
     gh release edit "$tag" --repo "$REPO" --draft=false --latest=false
   fi
