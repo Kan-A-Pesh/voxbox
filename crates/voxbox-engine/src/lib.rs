@@ -20,6 +20,8 @@ use voxbox_dsp::EffectSpec;
 mod decode;
 mod device;
 pub mod graph;
+mod manager;
+mod recovery;
 mod runtime;
 mod scheduling;
 use voxbox_rvc::RvcStream;
@@ -75,6 +77,21 @@ pub struct EngineStatus {
     pub cable_found: bool,
     /// Mic-to-cable latency estimate (buffers + effect latency + RVC).
     pub latency_ms: u32,
+    /// Why the engine is stopped (which device failed). Kept until sound is
+    /// back, so the UI can show it even if it missed the `DeviceError` event.
+    #[serde(default)]
+    pub last_error: Option<String>,
+    /// True while the engine is retrying on its own (no devices open).
+    #[serde(default)]
+    pub restarting: bool,
+    /// Running on the system defaults because the saved devices are missing;
+    /// the engine switches back on its own once they are plugged in.
+    #[serde(default)]
+    pub fallback: bool,
+    /// Grows with every status change, so the UI can ignore an older read
+    /// that arrives after a newer one.
+    #[serde(default)]
+    pub revision: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -93,6 +110,12 @@ pub enum EngineEvent {
     SoundEnded { id: String },
     #[serde(rename_all = "camelCase")]
     DeviceError { message: String },
+    /// Sound is back after an automatic restart.
+    #[serde(rename_all = "camelCase")]
+    Recovered { message: String },
+    /// `status()` changed without a notification-worthy event (e.g. a retry
+    /// found which device fails): the UI re-reads the status quietly.
+    StatusChanged,
 }
 
 #[derive(Debug, Clone)]
@@ -125,6 +148,11 @@ impl Engine {
     }
     pub fn set_devices(&self, devices: DeviceSelection) -> Result<()> {
         self.runtime.set_devices(devices)
+    }
+    /// The selection the app has saved. Automatic restarts reopen it (then the
+    /// system defaults), never a change that was rejected or not saved.
+    pub fn set_target(&self, devices: DeviceSelection) {
+        self.runtime.set_target(devices);
     }
     pub fn status(&self) -> EngineStatus {
         self.runtime.status()

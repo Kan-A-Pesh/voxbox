@@ -47,7 +47,14 @@ pub fn update_settings(
         |next| next.apply(patch),
         requested_devices,
         |d| state.engine.set_devices(d.clone()).map_err(AppError::from),
-        |s| state.publish_flags(s),
+        |s| {
+            state.publish_flags(s);
+            if devices_changed {
+                // Under the store lock, saved or not: restarts aim at what is
+                // saved, in the order changes were saved.
+                state.engine.set_target(s.devices.clone());
+            }
+        },
     )?;
     if voice_changed {
         state.apply_voice()?;
@@ -358,5 +365,27 @@ pub fn delete_ai_model(app: AppHandle, state: State<'_, AppState>, id: String) -
         AppError::Other(format!("suppression impossible de {} : {e}", dir.display()))
     })?;
     state.emit_snapshot(&app);
+    Ok(())
+}
+
+/// Opens `<app data>/logs` in the file explorer so the user can send `voxbox.log`.
+#[tauri::command(async)]
+pub fn open_logs_folder(app: AppHandle) -> AppResult<()> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| AppError::Other(format!("dossier des journaux introuvable : {e}")))?
+        .join("logs");
+    fs::create_dir_all(&dir)
+        .map_err(|e| AppError::Other(format!("dossier des journaux impossible : {e}")))?;
+    let explorer = if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(explorer)
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| AppError::Other(format!("impossible d'ouvrir {} : {e}", dir.display())))?;
     Ok(())
 }

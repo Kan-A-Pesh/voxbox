@@ -48,8 +48,8 @@ export function Sidebar({ screen, onNavigate }: { screen: ScreenKey; onNavigate:
           {status.cableFound ? shortCable(status.cableName) : "VB-Cable introuvable"}
         </dd>
         <dt>Latence</dt>
-        <dd className="devbox__latency">
-          {status.running ? `${Math.round(status.latencyMs)} ms` : "moteur arrêté"}
+        <dd className="devbox__latency" title={status.running ? undefined : status.lastError ?? undefined}>
+          {status.running ? `${Math.round(status.latencyMs)} ms` : status.restarting ? "moteur arrêté · relance auto…" : "moteur arrêté"}
         </dd>
       </dl>
     </aside>

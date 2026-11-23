@@ -63,13 +63,25 @@ export interface EngineStatus {
   monitorName: string | null;
   cableFound: boolean;
   latencyMs: number;
+  /** Why the engine is stopped (device named). Null while sound works. It retries on its own. */
+  lastError: string | null;
+  /** True while the engine retries on its own (no devices open). */
+  restarting: boolean;
+  /** Running on the system defaults while the saved devices are missing (switches back by itself). */
+  fallback: boolean;
+  /** Grows with every status change: an older read never replaces a newer one. */
+  revision: number;
 }
 
 export type EngineEvent =
   | { type: "meter"; inputDb: number; outputDb: number }
   | { type: "soundProgress"; id: string; positionMs: number; durationMs: number }
   | { type: "soundEnded"; id: string }
-  | { type: "deviceError"; message: string };
+  | { type: "deviceError"; message: string }
+  /** Sound is back after an automatic restart. */
+  | { type: "recovered"; message: string }
+  /** Status changed quietly (e.g. a retry identified the failing device): re-read it, no notification. */
+  | { type: "statusChanged" };
 
 // ---- voxbox-rvc ---------------------------------------------------------------
 
@@ -169,6 +181,8 @@ export interface Commands {
   /** Emits "ai-import-progress" { progress: 0..1 } while converting. Also creates the AI voice. */
   import_ai_model: [{ pthPath: string; indexPath: string | null; name: string }, AiModelMeta];
   delete_ai_model: [{ id: string }, null];
+  /** Opens the folder holding voxbox.log in the file explorer. */
+  open_logs_folder: [Record<string, never>, null];
 }
 
 /** Backend -> UI events. */

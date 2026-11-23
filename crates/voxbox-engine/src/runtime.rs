@@ -1,7 +1,8 @@
 use crate::{
     device::{AudioIo, Streams},
     graph::{Command, Graph, Settings, Voice, BLOCK},
-    DeviceSelection, EngineError, EngineEvent, EngineStatus, EventSink, Result,
+    manager::{Backend, Manager},
+    DeviceSelection, EngineError, EngineStatus, EventSink, Result,
 };
 use std::{
     collections::VecDeque,
@@ -10,16 +11,67 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use voxbox_dsp::EffectSpec;
 use voxbox_rvc::RvcStream;
 
 enum Message {
     Devices(DeviceSelection, mpsc::Sender<Result<()>>),
+    /// The selection the app has saved: what automatic restarts aim for.
+    Target(DeviceSelection),
     Audio(Command),
     Shutdown,
 }
+/// Real hardware behind the device manager.
+struct CpalBackend<'a> {
+    io: &'a AudioIo,
+    worker: &'a AudioWorker,
+}
+impl Backend for CpalBackend<'_> {
+    type Streams = Streams;
+    fn open(&mut self, selection: &DeviceSelection) -> Result<Streams> {
+        self.io.clear();
+        let opened = Streams::open(selection, self.io);
+        if opened.is_err() {
+            self.io.clear();
+        }
+        opened
+    }
+    fn close(&mut self, streams: Streams) {
+        self.worker.pause();
+        drop(streams);
+        self.io.clear();
+    }
+    fn resume(&mut self) {
+        self.io
+            .running
+            .store(!self.io.failed.load(Ordering::Acquire), Ordering::Release);
+    }
+    fn status_of(&self, streams: &Streams) -> EngineStatus {
+        streams.status.clone()
+    }
+    fn available(&self, selection: &DeviceSelection) -> bool {
+        crate::device::selection_available(selection)
+    }
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+    fn confirm_started(&mut self) -> bool {
+        let deadline = Instant::now() + crate::recovery::PROBATION;
+        while Instant::now() < deadline {
+            if self.io.failed.load(Ordering::Acquire) {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        !self.io.failed.load(Ordering::Acquire)
+    }
+    fn healthy(&self) -> bool {
+        !self.io.failed.load(Ordering::Acquire)
+    }
+}
+
 pub(crate) struct Runtime {
     sender: mpsc::Sender<Message>,
     manager: Option<JoinHandle<()>>,
@@ -70,143 +122,139 @@ impl Runtime {
             monitor_name: None,
             cable_found: false,
             latency_ms: 0,
+            last_error: None,
+            restarting: false,
+            fallback: false,
+            revision: 0,
         }));
         let (sender, receiver) = mpsc::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let thread_settings = Arc::clone(&settings);
         let thread_io = io.clone();
         let thread_status = Arc::clone(&status);
-        let manager = thread::Builder::new().name("voxbox-control".into()).spawn(move || {
-            // A saved device that disappeared (USB headset unplugged) must not keep
-            // the app from starting: fall back to the system defaults, and if even
-            // those fail start without streams so Réglages can pick new devices.
-            // Selection the open streams were built from: restored if a later
-            // device change fails, so a bad pick never leaves the app silent.
-            let mut active_selection = Some(devices.clone());
-            let mut streams = match Streams::open(&devices, &thread_io) {
-                Ok(streams) => Some(streams),
-                Err(error) => {
-                    thread_io.clear();
-                    let fallback = DeviceSelection::default();
-                    let retried = if devices == fallback { None } else { Streams::open(&fallback, &thread_io).ok() };
-                    let message = match &retried {
-                        Some(_) => format!("{error}. Les périphériques par défaut du système sont utilisés : vérifiez-les dans Réglages."),
-                        None => format!("{error}. Choisissez vos périphériques dans Réglages."),
+        let manager = thread::Builder::new()
+            .name("voxbox-control".into())
+            .spawn(move || {
+                let (mut graph, mut control) = Graph::new(thread_settings);
+                let stopped = Arc::new(AtomicBool::new(false));
+                let worker_stop = Arc::clone(&stopped);
+                let worker_io = thread_io.clone();
+                let worker =
+                    match thread::Builder::new()
+                        .name("voxbox-audio".into())
+                        .spawn(move || {
+                            let _scheduling = crate::scheduling::AudioSchedule::new();
+                            graph.prepare_thread();
+                            let mut mic = [0.0; BLOCK];
+                            let mut cable = [0.0; BLOCK];
+                            let mut monitor = [0.0; BLOCK];
+                            while !worker_stop.load(Ordering::Acquire) {
+                                if !worker_io.running.load(Ordering::Acquire)
+                                    || worker_io.mic.len() < BLOCK
+                                {
+                                    thread::sleep(Duration::from_millis(1));
+                                    continue;
+                                }
+                                worker_io.active.store(true, Ordering::SeqCst);
+                                if !worker_io.running.load(Ordering::SeqCst) {
+                                    worker_io.active.store(false, Ordering::SeqCst);
+                                    continue;
+                                }
+                                for sample in &mut mic {
+                                    *sample = worker_io.mic.pop().unwrap_or(0.0);
+                                }
+                                graph.process(&mic, &mut cable, &mut monitor);
+                                for (c, m) in cable.into_iter().zip(monitor) {
+                                    let _ = worker_io.cable.force_push(c);
+                                    let _ = worker_io.monitor.force_push(m);
+                                }
+                                worker_io.active.store(false, Ordering::SeqCst);
+                            }
+                            // Join returns ownership; delay buffers, RVC worker and sound Arcs
+                            // are destroyed by the control thread, never the audio worker.
+                            graph
+                        }) {
+                        Ok(worker) => worker,
+                        Err(error) => {
+                            let _ = ready_tx.send(Err(EngineError::Stream(error.to_string())));
+                            return;
+                        }
                     };
-                    tracing::warn!("{message}");
-                    events(EngineEvent::DeviceError { message });
-                    if retried.is_none() {
-                        thread_io.clear();
+                let worker = AudioWorker {
+                    handle: Some(worker),
+                    stopped,
+                    running: Arc::clone(&thread_io.running),
+                    active: Arc::clone(&thread_io.active),
+                };
+                let mut devices_manager = Manager::new(
+                    CpalBackend {
+                        io: &thread_io,
+                        worker: &worker,
+                    },
+                    devices,
+                );
+                // Status is published before the events that announce it, so a UI
+                // reacting to an event always reads the matching status.
+                // Only when something changed: the loop runs every millisecond.
+                let mut published_revision = None;
+                let mut publish = |m: &mut Manager<CpalBackend<'_>>| {
+                    if published_revision != Some(m.status().revision) {
+                        *thread_status.lock().expect("status poisoned") = m.status().clone();
+                        published_revision = Some(m.status().revision);
                     }
-                    active_selection = retried.as_ref().map(|_| fallback);
-                    retried
-                }
-            };
-            let (mut graph, mut control) = Graph::new(thread_settings);
-            let stopped = Arc::new(AtomicBool::new(false));
-            let worker_stop = Arc::clone(&stopped);
-            let worker_io = thread_io.clone();
-            let worker = match thread::Builder::new().name("voxbox-audio".into()).spawn(move || {
-                let _scheduling = crate::scheduling::AudioSchedule::new();
-                graph.prepare_thread();
-                let mut mic = [0.0; BLOCK];
-                let mut cable = [0.0; BLOCK];
-                let mut monitor = [0.0; BLOCK];
-                while !worker_stop.load(Ordering::Acquire) {
-                    if !worker_io.running.load(Ordering::Acquire) || worker_io.mic.len() < BLOCK {
-                        thread::sleep(Duration::from_millis(1));
-                        continue;
+                    for event in m.take_events() {
+                        events(event);
                     }
-                    worker_io.active.store(true, Ordering::SeqCst);
-                    if !worker_io.running.load(Ordering::SeqCst) {
-                        worker_io.active.store(false, Ordering::SeqCst);
-                        continue;
+                };
+                devices_manager.start();
+                publish(&mut devices_manager);
+                let _ = ready_tx.send(Ok(()));
+                let mut pending = VecDeque::new();
+                loop {
+                    match receiver.recv_timeout(Duration::from_millis(1)) {
+                        Ok(Message::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        Ok(Message::Audio(command)) => pending.push_back(command),
+                        Ok(Message::Target(selection)) => devices_manager.set_target(selection),
+                        Ok(Message::Devices(selection, reply)) => {
+                            let result = devices_manager.request(selection);
+                            publish(&mut devices_manager);
+                            let _ = reply.send(result);
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
                     }
-                    for sample in &mut mic { *sample = worker_io.mic.pop().unwrap_or(0.0); }
-                    graph.process(&mic, &mut cable, &mut monitor);
-                    for (c, m) in cable.into_iter().zip(monitor) {
-                        let _ = worker_io.cable.force_push(c);
-                        let _ = worker_io.monitor.force_push(m);
+                    if worker.is_finished() {
+                        thread_io.running.store(false, Ordering::Release);
+                        devices_manager.worker_died();
+                        publish(&mut devices_manager);
+                        break;
                     }
-                    worker_io.active.store(false, Ordering::SeqCst);
-                }
-                // Join returns ownership; delay buffers, RVC worker and sound Arcs
-                // are destroyed by the control thread, never the audio worker.
-                graph
-            }) {
-                Ok(worker) => worker,
-                Err(error) => { let _ = ready_tx.send(Err(EngineError::Stream(error.to_string()))); return; }
-            };
-            let worker = AudioWorker { handle: Some(worker), stopped, running: Arc::clone(&thread_io.running), active: Arc::clone(&thread_io.active) };
-            if let Some(streams) = &streams { *thread_status.lock().expect("status poisoned") = streams.status.clone(); }
-            thread_io.running.store(!thread_io.failed.load(Ordering::Acquire), Ordering::Release);
-            let _ = ready_tx.send(Ok(()));
-            let mut pending = VecDeque::new();
-            loop {
-                match receiver.recv_timeout(Duration::from_millis(1)) {
-                    Ok(Message::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Ok(Message::Audio(command)) => pending.push_back(command),
-                    Ok(Message::Devices(selection, reply)) => {
-                        worker.pause();
-                        drop(streams.take());
-                        thread_io.clear();
-                        match Streams::open(&selection, &thread_io) {
-                            Ok(opened) => {
-                                *thread_status.lock().expect("status poisoned") = opened.status.clone();
-                                streams = Some(opened);
-                                active_selection = Some(selection);
-                                thread_io.running.store(!thread_io.failed.load(Ordering::Acquire), Ordering::Release);
-                                let _ = reply.send(Ok(()));
-                            }
-                            Err(error) => {
-                                thread_io.clear();
-                                let restored = active_selection.as_ref().and_then(|previous| Streams::open(previous, &thread_io).ok());
-                                let message = match restored {
-                                    Some(opened) => {
-                                        *thread_status.lock().expect("status poisoned") = opened.status.clone();
-                                        streams = Some(opened);
-                                        thread_io.running.store(!thread_io.failed.load(Ordering::Acquire), Ordering::Release);
-                                        format!("{error}. Les périphériques précédents restent utilisés.")
-                                    }
-                                    None => {
-                                        thread_io.clear();
-                                        active_selection = None;
-                                        thread_status.lock().expect("status poisoned").running = false;
-                                        error.to_string()
-                                    }
-                                };
-                                events(EngineEvent::DeviceError { message });
-                                let _ = reply.send(Err(error));
-                            }
+                    control.reclaim();
+                    while let Some(command) = pending.pop_front() {
+                        if let Err(command) = control.send(command) {
+                            pending.push_front(command);
+                            break;
                         }
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    while let Some(event) = control.event() {
+                        events(event.into_event());
+                    }
+                    if thread_io.failed.swap(false, Ordering::AcqRel)
+                        && devices_manager.has_streams()
+                    {
+                        thread_io.running.store(false, Ordering::Release);
+                        devices_manager.lost();
+                    }
+                    devices_manager.tick();
+                    publish(&mut devices_manager);
                 }
-                if worker.is_finished() {
-                    thread_io.running.store(false, Ordering::Release);
-                    thread_status.lock().expect("status poisoned").running = false;
-                    events(EngineEvent::DeviceError { message: "Le traitement audio s’est arrêté de manière inattendue.".into() });
-                    break;
-                }
+                thread_io.running.store(false, Ordering::Release);
+                drop(devices_manager);
+                // Graph resources and RVC workers are joined/reclaimed here, including
+                // during unwinding if an EventSink callback panics.
+                drop(worker);
                 control.reclaim();
-                while let Some(command) = pending.pop_front() {
-                    if let Err(command) = control.send(command) { pending.push_front(command); break; }
-                }
-                while let Some(event) = control.event() { events(event.into_event()); }
-                if thread_io.failed.swap(false, Ordering::AcqRel) {
-                    thread_io.running.store(false, Ordering::Release);
-                    thread_status.lock().expect("status poisoned").running = false;
-                    events(EngineEvent::DeviceError { message: "Le périphérique audio a été déconnecté ou le flux a échoué. Sélectionnez à nouveau vos périphériques.".into() });
-                    drop(streams.take());
-                }
-            }
-            thread_io.running.store(false, Ordering::Release);
-            drop(streams.take());
-            // Graph resources and RVC workers are joined/reclaimed here, including
-            // during unwinding if an EventSink callback panics.
-            drop(worker);
-            control.reclaim();
-        }).map_err(|error| EngineError::Stream(error.to_string()))?;
+            })
+            .map_err(|error| EngineError::Stream(error.to_string()))?;
         match ready_rx.recv() {
             Ok(Ok(())) => Ok(Self {
                 sender,
@@ -223,6 +271,11 @@ impl Runtime {
                 let _ = manager.join();
                 Err(EngineError::Stream(error.to_string()))
             }
+        }
+    }
+    pub fn set_target(&self, selection: DeviceSelection) {
+        if self.sender.send(Message::Target(selection)).is_err() {
+            tracing::error!("Le moteur audio est arrêté ; la cible de relance a été ignorée");
         }
     }
     pub fn set_devices(&self, selection: DeviceSelection) -> Result<()> {
