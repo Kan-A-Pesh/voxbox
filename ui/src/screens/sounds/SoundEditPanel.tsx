@@ -2,7 +2,8 @@ import { useId, useState } from "react";
 import type { Sound } from "../../ipc/contract";
 import { useVox } from "../../state/store";
 import { conflictFor, describeAction } from "../../lib/hotkeys";
-import { Field, IconButton, Slider, Toggle } from "../../components/Controls";
+import { Field, Slider, Toggle } from "../../components/Controls";
+import { SidePanel } from "../../components/SidePanel";
 import { HotkeyCapture } from "../../components/HotkeyCapture";
 
 const formatDuration = (ms: number) => {
@@ -38,12 +39,8 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
   }
 
   return (
-    <aside className="panel edit-panel" aria-labelledby={`${id}-title`}>
-      <div className="panel__head">
-        <h2 className="panel__title" id={`${id}-title`}>Modifier le son</h2>
-        <IconButton icon="close" size={1} label="Fermer le panneau" onClick={onClose} />
-      </div>
-      <form className="stack" onSubmit={submit} noValidate>
+    <SidePanel title="Modifier le son" onClose={onClose}>
+      <form className="panel-form" onSubmit={submit} noValidate>
         <Field label="Nom" htmlFor={`${id}-name`} error={nameError}>
           <input
             id={`${id}-name`}
@@ -106,7 +103,7 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
           <dt>Source</dt>
           <dd>{sound.source === "myinstants" ? "MyInstants" : "Fichier local"}</dd>
         </dl>
-        <div className="row">
+        <div className="panel-actions">
           <button type="submit" className="btn btn--primary" disabled={!dirty || saving}>
             {saving ? "Enregistrement…" : "Enregistrer"}
           </button>
@@ -123,11 +120,11 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
             <button type="button" className="btn btn--ghost" onClick={() => setConfirmDelete(false)}>Garder</button>
           </div>
         ) : (
-          <button type="button" className="btn btn--ghost btn--danger-text" onClick={() => setConfirmDelete(true)}>
+          <button type="button" className="link-btn link-btn--danger" onClick={() => setConfirmDelete(true)}>
             Supprimer ce son
           </button>
         )}
       </div>
-    </aside>
+    </SidePanel>
   );
 }

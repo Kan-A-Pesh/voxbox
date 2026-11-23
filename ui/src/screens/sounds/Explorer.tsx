@@ -4,7 +4,7 @@ import { errorMessage, useVox } from "../../state/store";
 import { useDebounced } from "../../lib/useDebounced";
 import { onGridKeyDown } from "../../lib/gridNav";
 import { PixelIcon } from "../../components/PixelIcon";
-import { EmptyState, ErrorPanel, SearchField } from "../../components/Controls";
+import { EmptyState, ErrorPanel } from "../../components/Controls";
 
 export const SEARCH_DEBOUNCE_MS = 300;
 
@@ -17,9 +17,8 @@ type Feed = {
   error: string | null;
 };
 
-export function Explorer() {
+export function Explorer({ query: input, onClearQuery }: { query: string; onClearQuery: () => void }) {
   const { backend, snapshot, setSnapshot, call, notify } = useVox();
-  const [input, setInput] = useState("");
   const query = useDebounced(input.trim(), SEARCH_DEBOUNCE_MS);
   const [feed, setFeed] = useState<Feed>({ query, sounds: [], page: 0, hasMore: true, loading: true, error: null });
   const request = useRef(0);
@@ -116,12 +115,9 @@ export function Explorer() {
 
   return (
     <div className="explorer">
-      <div className="explorer__bar">
-        <SearchField label="Rechercher sur MyInstants" placeholder="chercher un son_" value={input} onChange={setInput} />
-        <p className="hint">
-          {query ? `Résultats pour « ${query} »` : "Sons populaires sur MyInstants"} · seule fonction en ligne de VoxBox
-        </p>
-      </div>
+      <p className="hint explorer__caption">
+        {query ? `Résultats pour « ${query} »` : "Sons populaires sur MyInstants"} · seule fonction en ligne de VoxBox
+      </p>
       <audio
         ref={audio}
         preload="none"
@@ -147,13 +143,13 @@ export function Explorer() {
         <EmptyState
           icon="search"
           title={`Aucun son pour « ${feed.query} »`}
-          action={<button type="button" className="btn" onClick={() => setInput("")}>Voir les sons populaires</button>}
+          action={<button type="button" className="btn" onClick={onClearQuery}>Voir les sons populaires</button>}
         >
           Essaie un mot plus court ou en anglais.
         </EmptyState>
       ) : (
         <>
-          <div className="remote-grid" role="list" onKeyDown={onGridKeyDown}>
+          <ul className="remote-grid" aria-label="Sons MyInstants" onKeyDown={onGridKeyDown}>
             {feed.sounds.map((s, i) => (
               <RemoteTile
                 key={`${s.pageUrl}-${i}`}
@@ -166,7 +162,7 @@ export function Explorer() {
                 onAdd={(c) => add(s, c)}
               />
             ))}
-          </div>
+          </ul>
           <div ref={sentinel} className="explorer__more">
             {feed.loading ? (
               <p className="hint" role="status">Chargement<span className="blink">_</span></p>
@@ -216,7 +212,7 @@ function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd 
   }
 
   return (
-    <div role="listitem" className={`remote${playing ? " is-playing" : ""}`} style={{ "--tile": color } as React.CSSProperties}>
+    <li className={`remote${playing ? " is-playing" : ""}${picking ? " is-picking" : ""}`}>
       <button
         type="button"
         data-grid-item
@@ -224,7 +220,7 @@ function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd 
         onClick={onPreview}
         aria-label={`${playing ? "Arrêter l'aperçu de" : "Écouter"} ${sound.title}`}
       >
-        <span className="remote__disc"><PixelIcon name={playing ? "stop" : "play"} scale={2} /></span>
+        <PixelIcon name={playing ? "stop" : "play"} scale={2} color={color} />
         <span className="remote__title">{sound.title}</span>
       </button>
       {picking ? (
@@ -261,6 +257,6 @@ function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd 
           )}
         </div>
       )}
-    </div>
+    </li>
   );
 }

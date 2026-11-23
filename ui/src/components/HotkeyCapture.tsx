@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { captureKey, captureMouse } from "../lib/accelerator";
 import { PixelIcon } from "./PixelIcon";
+import { IconButton } from "./Controls";
 
 interface Props {
   /** Accessible name, e.g. "Raccourci pour Robot". */
@@ -98,18 +99,15 @@ export function HotkeyCapture({ label, value, onChange, conflict, id }: Props) {
           </span>
         </button>
         {value && !capturing ? (
-          <button
-            type="button"
-            className="icon-btn icon-btn--flat"
-            aria-label={`Retirer le raccourci (${label})`}
-            title="Retirer le raccourci"
+          <IconButton
+            icon="close"
+            size={1}
+            label={`Retirer le raccourci (${label})`}
             onClick={() => {
               commit(null);
               ref.current?.focus();
             }}
-          >
-            <PixelIcon name="close" scale={1} />
-          </button>
+          />
         ) : null}
       </div>
       <p className="hint" aria-live="polite">

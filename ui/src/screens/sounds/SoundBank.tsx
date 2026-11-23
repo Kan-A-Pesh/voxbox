@@ -1,27 +1,29 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { Sound } from "../../ipc/contract";
 import { useVox } from "../../state/store";
 import { onGridKeyDown } from "../../lib/gridNav";
+import { fold } from "../../lib/text";
 import { reconcileSoundHotkeys } from "../../lib/hotkeys";
 import { PixelIcon } from "../../components/PixelIcon";
-import { Chips, EmptyState, IconButton, Slider } from "../../components/Controls";
+import { Chips, EmptyState, IconButton } from "../../components/Controls";
 import { SoundEditPanel } from "./SoundEditPanel";
-import { useSoundProgress, type Progress } from "./useSoundProgress";
+import type { Progress } from "./useSoundProgress";
 
-export const SOUND_EXTENSIONS = ["mp3", "wav", "ogg", "flac"];
 const ALL = "__all";
 const FAV = "__fav";
 const NONE = "__none";
 
-const pct = (v: number) => `${Math.round(v * 100)} %`;
-
-export function SoundBank({ onExplore }: { onExplore: () => void }) {
-  const { snapshot, setSnapshot, call, backend, notify, patchSettings } = useVox();
-  const { sounds, settings } = snapshot;
-  const progress = useSoundProgress();
+export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }: {
+  query: string;
+  onClearQuery: () => void;
+  progress: Progress;
+  onImport: () => void;
+  onExplore: () => void;
+}) {
+  const { snapshot, setSnapshot, call } = useVox();
+  const { sounds } = snapshot;
   const [filter, setFilter] = useState(ALL);
   const [editing, setEditing] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
 
   const categories = useMemo(
     () => [...new Set(sounds.map((s) => s.category).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, "fr")),
@@ -30,54 +32,18 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
 
   const filterOptions = [
     { value: ALL, label: "Tous", count: sounds.length },
-    { value: FAV, label: "★ Favoris", count: sounds.filter((s) => s.favorite).length },
+    { value: FAV, label: "Favoris", count: sounds.filter((s) => s.favorite).length },
     ...categories.map((c) => ({ value: c, label: c, count: sounds.filter((s) => s.category === c).length })),
     ...(sounds.some((s) => !s.category) ? [{ value: NONE, label: "Sans catégorie", count: sounds.filter((s) => !s.category).length }] : []),
   ];
   const activeFilter = filterOptions.some((o) => o.value === filter) ? filter : ALL;
 
-  const visible = sounds.filter((s) =>
-    activeFilter === ALL ? true : activeFilter === FAV ? s.favorite : activeFilter === NONE ? !s.category : s.category === activeFilter,
+  const q = fold(query.trim());
+  const visible = sounds.filter(
+    (s) =>
+      (activeFilter === ALL ? true : activeFilter === FAV ? s.favorite : activeFilter === NONE ? !s.category : s.category === activeFilter) &&
+      (!q || fold(s.name).includes(q)),
   );
-
-  async function importPaths(paths: string[]) {
-    if (paths.length === 0) return;
-    const added = await call("import_sounds", { paths });
-    if (!added) return;
-    setSnapshot((s) => ({ ...s, sounds: [...s.sounds, ...added] }));
-    notify(added.length === 1 ? `« ${added[0]?.name} » ajouté à ta banque` : `${added.length} sons ajoutés à ta banque`);
-  }
-
-  async function pickAndImport() {
-    try {
-      const paths = await backend.pickFiles({ title: "Sons audio", extensions: SOUND_EXTENSIONS, multiple: true });
-      if (paths) await importPaths(paths);
-    } catch (e) {
-      notify(`Impossible d'ouvrir le sélecteur de fichiers : ${String(e)}`, "error");
-    }
-  }
-
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let alive = true;
-    backend
-      .onFileDrop((e) => {
-        if (e.type === "over") setDragging(true);
-        else if (e.type === "leave") setDragging(false);
-        else {
-          setDragging(false);
-          const audio = e.paths.filter((p) => SOUND_EXTENSIONS.some((x) => p.toLowerCase().endsWith(`.${x}`)));
-          if (audio.length < e.paths.length) notify("Seuls les fichiers mp3, wav, ogg et flac sont importés.", "error");
-          void importPaths(audio);
-        }
-      })
-      .then((u) => (alive ? (unlisten = u) : u()));
-    return () => {
-      alive = false;
-      unlisten?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend]);
 
   async function toggle(s: Sound) {
     if (progress[s.id]) await call("stop_sound", { id: s.id });
@@ -116,49 +82,11 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
   }
 
   const editedSound = sounds.find((s) => s.id === editing) ?? null;
-  const playingCount = Object.keys(progress).length;
 
   return (
-    <div className={`bank${editedSound ? " bank--editing" : ""}`}>
-      <div className="bank__main">
-        <div className="bank__bar">
-          <div className="bank__actions">
-            <button type="button" className="btn btn--primary" onClick={pickAndImport}>
-              <PixelIcon name="folder" scale={1} /> Importer des sons
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => call("stop_all_sounds", {})}
-              disabled={playingCount === 0}
-            >
-              <PixelIcon name="stop" scale={1} /> Tout arrêter
-            </button>
-          </div>
-          <div className="bank__levels">
-            <Slider
-              label="Vers le micro"
-              hint="Ce que les autres entendent"
-              value={settings.soundMicVolume}
-              min={0}
-              max={1}
-              step={0.01}
-              format={pct}
-              onChange={(soundMicVolume) => patchSettings({ soundMicVolume })}
-            />
-            <Slider
-              label="Dans mon casque"
-              hint="Ce que tu entends"
-              value={settings.soundMonitorVolume}
-              min={0}
-              max={1}
-              step={0.01}
-              format={pct}
-              onChange={(soundMonitorVolume) => patchSettings({ soundMonitorVolume })}
-            />
-          </div>
-        </div>
-        <Chips label="Filtrer les sons" options={filterOptions} value={activeFilter} onChange={setFilter} />
+    <div className={`with-panel${editedSound ? " has-panel" : ""}`}>
+      <div className="bank">
+        {sounds.length > 0 ? <Chips label="Filtrer les sons" options={filterOptions} value={activeFilter} onChange={setFilter} /> : null}
 
         {sounds.length === 0 ? (
           <EmptyState
@@ -166,7 +94,7 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
             title="Ta banque est vide"
             action={
               <div className="row">
-                <button type="button" className="btn btn--primary" onClick={pickAndImport}>Importer des sons</button>
+                <button type="button" className="btn btn--primary" onClick={onImport}>Importer des sons</button>
                 <button type="button" className="btn" onClick={onExplore}>Explorer MyInstants</button>
               </div>
             }
@@ -174,11 +102,19 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
             Glisse des fichiers mp3, wav, ogg ou flac ici, ou pioche dans les sons populaires.
           </EmptyState>
         ) : visible.length === 0 ? (
-          <EmptyState icon="favorite" title="Aucun son ici">
-            Clique sur l'étoile d'un son pour le retrouver dans tes favoris.
-          </EmptyState>
+          q ? (
+            <EmptyState
+              icon="search"
+              title={`Aucun son ne correspond à « ${query.trim()} »`}
+              action={<button type="button" className="btn" onClick={onClearQuery}>Effacer la recherche</button>}
+            />
+          ) : (
+            <EmptyState icon="favorite" title="Aucun son ici">
+              Clique sur l'étoile d'un son pour le retrouver dans tes favoris.
+            </EmptyState>
+          )
         ) : (
-          <div className="pad-grid" role="list" onKeyDown={onGridKeyDown}>
+          <ul className="pad-grid" aria-label="Sons de ta banque" onKeyDown={onGridKeyDown}>
             {visible.map((s) => (
               <Pad
                 key={s.id}
@@ -190,11 +126,8 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
                 onEdit={() => setEditing(s.id === editing ? null : s.id)}
               />
             ))}
-          </div>
+          </ul>
         )}
-        <p className="hint bank__drop-hint">
-          <PixelIcon name="download" scale={1} /> Glisse des fichiers audio n'importe où dans la fenêtre pour les importer.
-        </p>
       </div>
 
       {editedSound ? (
@@ -206,14 +139,6 @@ export function SoundBank({ onExplore }: { onExplore: () => void }) {
           onDelete={() => deleteSound(editedSound.id)}
           onClose={() => setEditing(null)}
         />
-      ) : null}
-
-      {dragging ? (
-        <div className="dropzone" aria-hidden="true">
-          <PixelIcon name="download" scale={6} />
-          <p>Lâche tes sons ici</p>
-          <p className="hint">mp3 · wav · ogg · flac</p>
-        </div>
       ) : null}
     </div>
   );
@@ -230,23 +155,31 @@ function Pad({ sound, progress, editing, onToggle, onFavorite, onEdit }: {
   const p = progress[sound.id];
   const ratio = p && p.durationMs > 0 ? p.positionMs / p.durationMs : 0;
   return (
-    <div role="listitem" className={`pad${p ? " is-playing" : ""}${editing ? " is-editing" : ""}`}>
+    <li className={`pad${p ? " is-playing" : ""}${editing ? " is-editing" : ""}${sound.favorite ? " is-favorite" : ""}`}>
       <button
         type="button"
         data-grid-item
         className="pad__main"
         onClick={onToggle}
+        title={sound.name}
         aria-label={`${p ? "Arrêter" : "Jouer"} ${sound.name}`}
       >
-        <span className="pad__glyph"><PixelIcon name={p ? "stop" : "play"} scale={2} /></span>
-        <span className="pad__name">{sound.name}</span>
-        <span className="pad__meta">
-          <span>{sound.hotkey ?? "—"}</span>
-          {sound.loop ? (
-            <span className="pad__loop" title="Lecture en boucle">
-              <PixelIcon name="loop" scale={1} /> boucle
-            </span>
-          ) : null}
+        <PixelIcon name={p ? "stop" : "play"} scale={2} className="pad__glyph" />
+        <span className="pad__text">
+          <span className="pad__name">{sound.name}</span>
+          <span className="pad__meta">
+            {sound.favorite ? (
+              <span className="pad__fav" title="Favori">
+                <PixelIcon name="star" scale={1} />
+              </span>
+            ) : null}
+            {sound.hotkey ? <kbd>{sound.hotkey}</kbd> : null}
+            {sound.loop ? (
+              <span className="pad__loop" title="Lecture en boucle">
+                <PixelIcon name="loop" scale={1} /> boucle
+              </span>
+            ) : null}
+          </span>
         </span>
       </button>
       <div className="pad__tools">
@@ -260,9 +193,11 @@ function Pad({ sound, progress, editing, onToggle, onFavorite, onEdit }: {
         />
         <IconButton icon="pencil" size={1} label={`Modifier ${sound.name}`} pressed={editing} onClick={onEdit} />
       </div>
-      <span className="pad__progress" aria-hidden="true">
-        <span style={{ width: `${Math.round(ratio * 100)}%` }} />
-      </span>
-    </div>
+      {p ? (
+        <span className="pad__progress" aria-hidden="true">
+          <span style={{ width: `${Math.round(ratio * 100)}%` }} />
+        </span>
+      ) : null}
+    </li>
   );
 }

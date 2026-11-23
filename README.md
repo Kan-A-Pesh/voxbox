@@ -1,9 +1,9 @@
 # VoxBox
 
-Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. La seule partie qui utilise Internet est l'onglet « Explorer MyInstants » de la banque de sons ; chaque son ajouté est téléchargé et fonctionne ensuite hors ligne.
+Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. La seule partie qui utilise Internet est l'onglet « MyInstants » de l'écran Sons ; chaque son ajouté est téléchargé et fonctionne ensuite hors ligne.
 
-- 22 voix prêtes à l'emploi (Villageois, Robot, Démon, Chipmunk, Géant, Radio, Cathédrale, Alien...) et un éditeur pour créer les siennes à partir de 18 effets.
-- Voix IA RVC (ONNX Runtime + DirectML : cartes NVIDIA et AMD), import de modèles `.pth` + `.index` avec conversion intégrée, 2 voix fournies.
+- Trois écrans : **Voix**, **Sons**, **Réglages**. 22 voix prêtes à l'emploi (Villageois, Robot, Démon, Chipmunk, Géant, Radio, Cathédrale, Alien...) ; un panneau latéral de l'écran Voix sert à créer, dupliquer ou modifier ses voix à partir de 18 effets.
+- Voix IA RVC (ONNX Runtime + DirectML : cartes NVIDIA et AMD), import de modèles `.pth` + `.index` avec conversion intégrée (filtre IA de l'écran Voix), 2 voix fournies.
 - Banque de sons : glisser-déposer mp3/wav/ogg/flac, catégories, favoris, volume, boucle, recherche MyInstants façon Giphy. Les sons partent dans le micro **et** dans le casque, avec un volume pour chaque côté.
 - Raccourcis globaux (actifs en jeu) : changer de voix, activer ou couper la voix, push-to-talk maintenu, sons, M'entendre. Les boutons latéraux de souris sont pris en charge.
 - Anti-bruit (RNNoise), « M'entendre », démarrage réduit, icône dans la zone de notification.
@@ -23,7 +23,7 @@ crates/voxbox-engine      moteur audio : WASAPI (cpal), anti-bruit, PTT, mixeur,
 crates/voxbox-rvc         voix IA RVC v2 en streaming (ONNX Runtime chargé dynamiquement)
 crates/voxbox-myinstants  recherche / téléchargement MyInstants (analyse HTML, pas d'API officielle)
 src-tauri                 app Tauri 2 : commandes, stockage JSON, raccourcis globaux (hooks bas niveau), tray
-ui                        interface React (pixel art), mock intégré pour le navigateur
+ui                        interface React (pixel art épuré : Voix, Sons, Réglages), mock intégré pour le navigateur
 converter                 conversion .pth → ONNX, runtime Python embarqué (pack Voix IA)
 installer, scripts        hooks NSIS (VB-CABLE), pack Voix IA, icônes
 ```
@@ -39,7 +39,7 @@ cd src-tauri && npx @tauri-apps/cli@2 dev                         # app complèt
 python scripts/fetch_vbcable.py && cd src-tauri && npx @tauri-apps/cli@2 build   # installeur
 ```
 
-L'interface accepte des paramètres d'URL dans le navigateur : `?screen=voices|sounds|editor|ai|settings`, `?offline`, `?nocable`.
+L'interface accepte des paramètres d'URL dans le navigateur : `?screen=voices|sounds|settings`, `?offline`, `?nocable`.
 Pour écouter une voix sans lancer l'app : `cargo run -p voxbox-dsp --example render -- villager in.wav out.wav`.
 
 ## Licences et attributions

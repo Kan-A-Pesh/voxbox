@@ -1,18 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BottomBar } from "./components/BottomBar";
 import { Sidebar, type ScreenKey } from "./components/Sidebar";
 import { Toasts } from "./components/Toasts";
 import { newerStatus, useVox } from "./state/store";
 import { VoicesScreen } from "./screens/VoicesScreen";
 import { SoundsScreen } from "./screens/SoundsScreen";
-import { EditorScreen } from "./screens/EditorScreen";
-import { AiScreen } from "./screens/AiScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 
 export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey }) {
   const [screen, setScreen] = useState<ScreenKey>(initialScreen);
-  const [editVoiceId, setEditVoiceId] = useState<string | null>(null);
   const { backend, notify, setSnapshot } = useVox();
+  // A screen holding unsaved work registers a guard; leaving it asks first.
+  const leaveGuard = useRef<(() => boolean) | null>(null);
+  const navigate = (next: ScreenKey) => {
+    if (next === screen || (leaveGuard.current && !leaveGuard.current())) return;
+    leaveGuard.current = null;
+    setScreen(next);
+  };
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -46,22 +50,15 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
     };
   }, [backend, notify, setSnapshot]);
 
-  const openEditor = (voiceId: string | null) => {
-    setEditVoiceId(voiceId);
-    setScreen("editor");
-  };
-
   return (
     <div className="app">
-      <Sidebar screen={screen} onNavigate={setScreen} />
+      <Sidebar screen={screen} onNavigate={navigate} />
       <main className="main" id="contenu">
-        {screen === "voices" && <VoicesScreen onEdit={openEditor} />}
+        {screen === "voices" && <VoicesScreen leaveGuardRef={leaveGuard} />}
         {screen === "sounds" && <SoundsScreen />}
-        {screen === "editor" && <EditorScreen initialVoiceId={editVoiceId} />}
-        {screen === "ai" && <AiScreen />}
         {screen === "settings" && <SettingsScreen />}
       </main>
-      <BottomBar />
+      <BottomBar onOpenSettings={() => navigate("settings")} />
       <Toasts />
     </div>
   );

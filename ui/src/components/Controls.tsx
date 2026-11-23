@@ -2,31 +2,31 @@ import { useId, type ReactNode } from "react";
 import { PixelIcon } from "./PixelIcon";
 import type { IconName } from "./icons";
 
-/** Square pixel switch. The whole row (label included) is the hit target. */
-export function Toggle({ label, checked, onChange, hint, compact }: {
+/** Square switch. The whole row (label included) is the hit target. */
+export function Toggle({ label, checked, onChange, hint, compact, className }: {
   label: string;
   checked: boolean;
   onChange: (next: boolean) => void;
   hint?: string;
   compact?: boolean;
+  className?: string;
 }) {
   const id = useId();
   return (
-    <label className={`toggle${compact ? " toggle--compact" : ""}`} htmlFor={id}>
-      <input
-        id={id}
-        type="checkbox"
-        role="switch"
-        className="toggle__input"
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        aria-describedby={hint ? `${id}-hint` : undefined}
-      />
-      <span className="toggle__track" aria-hidden="true"><span className="toggle__knob" /></span>
+    <label className={`toggle${compact ? " toggle--compact" : ""}${className ? ` ${className}` : ""}`} htmlFor={id}>
       <span className="toggle__text">
         <span className="toggle__label">{label}</span>
         {hint ? <span id={`${id}-hint`} className="toggle__hint">{hint}</span> : null}
       </span>
+      <input
+        id={id}
+        type="checkbox"
+        role="switch"
+        className="switch"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+      />
     </label>
   );
 }
@@ -68,8 +68,9 @@ export function Slider({ label, value, min, max, step, onChange, format, hint, i
   );
 }
 
-export function IconButton({ icon, label, onClick, pressed, tone, disabled, size = 2 }: {
+export function IconButton({ icon, label, onClick, pressed, tone, disabled, size = 2, className }: {
   icon: IconName;
+  className?: string;
   label: string;
   onClick: () => void;
   pressed?: boolean;
@@ -80,7 +81,7 @@ export function IconButton({ icon, label, onClick, pressed, tone, disabled, size
   return (
     <button
       type="button"
-      className={`icon-btn${tone ? ` icon-btn--${tone}` : ""}`}
+      className={`icon-btn${tone ? ` icon-btn--${tone}` : ""}${className ? ` ${className}` : ""}`}
       aria-label={label}
       title={label}
       aria-pressed={pressed}
@@ -117,7 +118,7 @@ export function Chips<T extends string>({ label, options, value, onChange }: {
   );
 }
 
-/** Terminal-style search: "> rechercher une voix_". */
+/** Underlined search field; Esc clears it. */
 export function SearchField({ label, placeholder, value, onChange }: {
   label: string;
   placeholder: string;
@@ -126,7 +127,7 @@ export function SearchField({ label, placeholder, value, onChange }: {
 }) {
   return (
     <div className="search">
-      <span className="search__prompt" aria-hidden="true">&gt;</span>
+      <PixelIcon name="search" scale={1} className="search__icon" />
       <input
         type="search"
         className="search__input"
@@ -155,7 +156,7 @@ export function EmptyState({ icon, title, children, action }: {
 }) {
   return (
     <div className="empty">
-      <PixelIcon name={icon} scale={4} className="empty__icon" />
+      <PixelIcon name={icon} scale={3} className="empty__icon" />
       <p className="empty__title">{title}</p>
       {children ? <p className="empty__text">{children}</p> : null}
       {action}
@@ -166,7 +167,7 @@ export function EmptyState({ icon, title, children, action }: {
 export function ErrorPanel({ title, message, action }: { title: string; message: string; action?: ReactNode }) {
   return (
     <div className="error-panel" role="alert">
-      <PixelIcon name="warning" scale={3} />
+      <PixelIcon name="warning" scale={2} />
       <div className="error-panel__body">
         <p className="error-panel__title">{title}</p>
         <p className="error-panel__text">{message}</p>
