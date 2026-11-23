@@ -32,9 +32,16 @@ jobs:
       - name: Build pack content
         shell: pwsh
         run: ./scripts/build_ai_pack.ps1 -OutputDir pack
+      # windows-latest no longer ships NSIS on PATH: install a pinned version.
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --version=3.13.0 --no-progress -y
       - name: Build add-on installer
         shell: pwsh
-        run: makensis /DPACK_DIR=$PWD\pack /DOUT_FILE=$PWD\VoxBox-Voix-IA-setup.exe installer\ai-pack.nsi
+        run: |
+          $makensis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          & $makensis /DPACK_DIR=$PWD\pack /DOUT_FILE=$PWD\VoxBox-Voix-IA-setup.exe installer\ai-pack.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: voxbox-ai-pack
