@@ -40,8 +40,10 @@ registrations are restored at shutdown. Failure to obtain scheduling priority
 is logged and processing continues at normal priority.
 
 Device changes stop/reopen only hardware streams; the graph, active voices,
-settings and sound positions survive. Device errors immediately mark running
-false, then emit a French `DeviceError` off the audio thread. An absent cable is
+settings and sound positions survive. Fatal stream errors immediately mark running
+false, then emit a French `DeviceError` naming the device and the backend's cause
+off the audio thread. Errors the stream survives (glitches/Xrun, refused real-time
+priority, an in-place reroute) are ignored. An absent cable is
 allowed when a headset output exists. Output selection rejects using the same
 endpoint for cable and headset, avoiding double playback into the cable. A
 system default output that is itself CABLE Input is not opened as a headset.

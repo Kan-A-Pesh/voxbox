@@ -70,6 +70,9 @@ impl Backend for CpalBackend<'_> {
     fn healthy(&self) -> bool {
         !self.io.failed.load(Ordering::Acquire)
     }
+    fn fault(&mut self) -> Option<String> {
+        self.io.take_fault()
+    }
 }
 
 pub(crate) struct Runtime {

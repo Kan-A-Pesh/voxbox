@@ -9,7 +9,7 @@ use crossbeam_queue::ArrayQueue;
 use rubato::{FastFixedIn, PolynomialDegree, Resampler};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 pub(crate) const CAPACITY: usize = 4800;
@@ -20,6 +20,9 @@ pub(crate) struct AudioIo {
     pub cable: Arc<ArrayQueue<f32>>,
     pub monitor: Arc<ArrayQueue<f32>>,
     pub failed: Arc<AtomicBool>,
+    /// Why a stream failed (which device, what the audio backend said), for the
+    /// log and the UI. Written once by the failing stream's error callback.
+    pub fault: Arc<Mutex<Option<String>>>,
     pub running: Arc<AtomicBool>,
     pub active: Arc<AtomicBool>,
 }
@@ -30,6 +33,7 @@ impl AudioIo {
             cable: Arc::new(ArrayQueue::new(CAPACITY)),
             monitor: Arc::new(ArrayQueue::new(CAPACITY)),
             failed: Arc::new(AtomicBool::new(false)),
+            fault: Arc::new(Mutex::new(None)),
             running: Arc::new(AtomicBool::new(false)),
             active: Arc::new(AtomicBool::new(false)),
         }
@@ -38,6 +42,10 @@ impl AudioIo {
         for queue in [&self.mic, &self.cable, &self.monitor] {
             while queue.pop().is_some() {}
         }
+    }
+    /// The recorded cause of the last failure, if any (cleared by reading it).
+    pub fn take_fault(&self) -> Option<String> {
+        self.fault.lock().ok().and_then(|mut fault| fault.take())
     }
 }
 /// Whether every explicitly chosen device of `selection` is currently present
@@ -110,6 +118,10 @@ pub(crate) struct Streams {
 }
 impl Streams {
     pub fn open(selection: &DeviceSelection, io: &AudioIo) -> Result<Self> {
+        // The previous streams are closed: forget their failure before building new
+        // ones, whose callbacks may report their own as soon as they are built.
+        io.failed.store(false, Ordering::Release);
+        drop(io.take_fault());
         let host = cpal::default_host();
         let cable_found = host
             .output_devices()
@@ -182,15 +194,14 @@ impl Streams {
                 .default_output_config()
                 .map_err(stream_error)
                 .map_err(at(role, device))?;
-            let (stream, ms) =
-                output_stream(device, config, Arc::clone(queue), io).map_err(at(role, device))?;
+            let (stream, ms) = output_stream(device, config, Arc::clone(queue), io, role)
+                .map_err(at(role, device))?;
             if role == "Sortie VB-Cable" {
                 output_buffer_ms = ms;
             }
             streams.push((stream, at(role, device)));
         }
         io.clear();
-        io.failed.store(false, Ordering::Release);
         for (stream, at) in &streams {
             stream.play().map_err(stream_error).map_err(at)?;
         }
@@ -297,11 +308,41 @@ impl Converter {
         }
     }
 }
-fn failure(io: &AudioIo) -> impl FnMut(cpal::Error) + Send + 'static {
+/// What CPAL's WASAPI backend says when it could not raise the audio thread's
+/// priority (it falls back to `SetThreadPriority` and reports a `BackendError`
+/// with this context, then keeps running).
+const PRIORITY_WARNING: &str = "Failed to promote audio thread to real-time priority";
+
+/// CPAL also reports problems the stream survives: a glitch (buffer under/overrun),
+/// refused real-time priority (`RealtimeDenied`, or WASAPI's priority fallback
+/// failing), or a default device rerouted in place. Only the others stop the stream.
+pub(crate) fn is_fatal(error: &cpal::Error) -> bool {
+    match error.kind() {
+        cpal::ErrorKind::Xrun
+        | cpal::ErrorKind::RealtimeDenied
+        | cpal::ErrorKind::DeviceChanged => false,
+        cpal::ErrorKind::BackendError => !error
+            .message()
+            .is_some_and(|m| m.starts_with(PRIORITY_WARNING)),
+        _ => true,
+    }
+}
+
+fn failure(io: &AudioIo, label: String) -> impl FnMut(cpal::Error) + Send + 'static {
     let failed = Arc::clone(&io.failed);
     let running = Arc::clone(&io.running);
-    move |_| {
-        // Do not format/allocate inside the backend's error callback.
+    let fault = Arc::clone(&io.fault);
+    move |error| {
+        if !is_fatal(&error) {
+            return;
+        }
+        // Error callbacks run on the backend thread, not in the audio callback, and a
+        // fatal one ends the stream: formatting the cause once here is fine.
+        if let Ok(mut fault) = fault.try_lock() {
+            if fault.is_none() {
+                *fault = Some(format!("{label} : {error} [{:?}]", error.kind()));
+            }
+        }
         failed.store(true, Ordering::Release);
         running.store(false, Ordering::Release);
     }
@@ -368,6 +409,7 @@ where
     let channels = config.channels as usize;
     let queue = Arc::clone(&io.mic);
     let failed = Arc::clone(&io.failed);
+    let label = format!("Micro « {} »", name(device));
     device
         .build_input_stream(
             config,
@@ -388,7 +430,7 @@ where
                     }
                 }
             },
-            failure(io),
+            failure(io, label),
             None,
         )
         .map_err(stream_error)
@@ -398,6 +440,7 @@ fn output_stream(
     supported: cpal::SupportedStreamConfig,
     queue: Arc<ArrayQueue<f32>>,
     io: &AudioIo,
+    role: &str,
 ) -> Result<(cpal::Stream, u32)> {
     let (config, ms) = config(&supported);
     with_buffer_fallback(config, ms, "sortie", |config| {
@@ -407,6 +450,7 @@ fn output_stream(
             config,
             Arc::clone(&queue),
             io,
+            role,
         )
     })
 }
@@ -416,10 +460,11 @@ fn output_any(
     config: cpal::StreamConfig,
     queue: Arc<ArrayQueue<f32>>,
     io: &AudioIo,
+    role: &str,
 ) -> Result<cpal::Stream> {
     macro_rules! build {
         ($ty:ty) => {
-            output_typed::<$ty>(device, config, queue, io)
+            output_typed::<$ty>(device, config, queue, io, role)
         };
     }
     match format {
@@ -445,6 +490,7 @@ fn output_typed<T>(
     config: cpal::StreamConfig,
     queue: Arc<ArrayQueue<f32>>,
     io: &AudioIo,
+    role: &str,
 ) -> Result<cpal::Stream>
 where
     T: SizedSample + cpal::FromSample<f32>,
@@ -452,6 +498,7 @@ where
     let mut converter = Converter::new(config.sample_rate as f64 / 48_000.0, 240)?;
     let channels = config.channels as usize;
     let failed = Arc::clone(&io.failed);
+    let label = format!("{role} « {} »", name(device));
     let mut primed = false;
     device
         .build_output_stream(
@@ -503,7 +550,7 @@ where
                     frame.fill(T::from_sample(sample.clamp(-1.0, 1.0)));
                 }
             },
-            failure(io),
+            failure(io, label),
             None,
         )
         .map_err(stream_error)
@@ -512,6 +559,65 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn glitches_and_reroutes_do_not_stop_the_stream() {
+        let io = AudioIo::new();
+        let mut report = failure(&io, "Micro « Shure »".into());
+        for kind in [
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::RealtimeDenied,
+            cpal::ErrorKind::DeviceChanged,
+        ] {
+            report(kind.into());
+        }
+        report(cpal::Error::with_message(
+            cpal::ErrorKind::BackendError,
+            format!("{PRIORITY_WARNING}: Accès refusé. (0x80070005)"),
+        ));
+        assert!(!io.failed.load(Ordering::Acquire));
+        assert_eq!(io.take_fault(), None);
+    }
+
+    #[test]
+    fn any_other_backend_error_is_fatal() {
+        let io = AudioIo::new();
+        io.running.store(true, Ordering::Release);
+        let mut report = failure(&io, "Sortie VB-Cable « CABLE Input »".into());
+        report(cpal::Error::with_message(
+            cpal::ErrorKind::BackendError,
+            "GetBuffer failed",
+        ));
+        assert!(io.failed.load(Ordering::Acquire));
+        assert!(
+            !io.running.load(Ordering::Acquire),
+            "processing stops at once"
+        );
+        let fault = io.take_fault().unwrap();
+        assert!(
+            fault.contains("GetBuffer failed") && fault.contains("BackendError"),
+            "{fault}"
+        );
+    }
+
+    #[test]
+    fn a_fatal_error_stops_the_stream_and_names_the_device() {
+        let io = AudioIo::new();
+        let mut report = failure(&io, "Casque « Arctis 7 »".into());
+        report(cpal::ErrorKind::DeviceNotAvailable.into());
+        report(cpal::Error::with_message(
+            cpal::ErrorKind::BackendError,
+            "GetBuffer failed",
+        ));
+        assert!(io.failed.load(Ordering::Acquire));
+        let fault = io.take_fault().unwrap();
+        assert!(fault.starts_with("Casque « Arctis 7 » : "), "{fault}");
+        assert!(
+            fault.contains("DeviceNotAvailable"),
+            "first cause kept: {fault}"
+        );
+        assert_eq!(io.take_fault(), None, "reading clears it");
+    }
     #[test]
     fn capture_resampling_preserves_callback_duration_from_the_first_block() {
         for rate in [8_000, 44_100, 48_000, 96_000] {

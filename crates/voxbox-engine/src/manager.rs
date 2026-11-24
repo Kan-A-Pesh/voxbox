@@ -37,6 +37,13 @@ pub(crate) trait Backend {
     fn confirm_started(&mut self) -> bool;
     /// False once the open streams reported a failure.
     fn healthy(&self) -> bool;
+    /// What the failing stream reported (device and cause), cleared by reading it.
+    fn fault(&mut self) -> Option<String>;
+}
+
+/// " (cause)" when the backend said why, for the outage messages.
+fn because(fault: Option<String>) -> String {
+    fault.map(|f| format!(" ({f})")).unwrap_or_default()
 }
 
 /// First wait before trying to go back to the wanted devices; doubles after
@@ -159,9 +166,11 @@ impl<B: Backend> Manager<B> {
         if self.backend.confirm_started() {
             Ok(streams)
         } else {
+            let fault = self.backend.fault();
             self.backend.close(streams);
-            Err(EngineError::Stream(String::from(
-                "le périphérique s’est ouvert mais n’a pas démarré",
+            Err(EngineError::Stream(format!(
+                "le périphérique s’est ouvert mais n’a pas démarré{}",
+                because(fault)
             )))
         }
     }
@@ -251,6 +260,7 @@ impl<B: Backend> Manager<B> {
     /// The streams reported a failure (device unplugged, start refused…).
     pub fn lost(&mut self) {
         let now = self.backend.now();
+        let cause = because(self.backend.fault());
         self.close_streams();
         self.recovery.lost(now);
         match self.probation.take() {
@@ -268,12 +278,12 @@ impl<B: Backend> Manager<B> {
                     self.switch_back_every = (self.switch_back_every * 2).min(SWITCH_BACK_MAX);
                 }
                 self.set_outage(
-                    String::from("Un périphérique audio n’a pas démarré. Nouvelle tentative automatique…"),
+                    format!("Un périphérique audio n’a pas démarré{cause}. Nouvelle tentative automatique…"),
                     false,
                 );
             }
             None => self.set_outage(
-                String::from("Un périphérique audio a été déconnecté ou son flux a échoué. Nouvelle tentative automatique…"),
+                format!("Un périphérique audio a été déconnecté ou son flux a échoué{cause}. Nouvelle tentative automatique…"),
                 true,
             ),
         }
@@ -449,6 +459,7 @@ mod tests {
         /// Selections that open fine but whose start is refused asynchronously.
         no_start: Rc<RefCell<Vec<DeviceSelection>>>,
         failed: Rc<Cell<bool>>,
+        fault: Rc<RefCell<Option<String>>>,
     }
     impl World {
         fn new() -> Self {
@@ -495,6 +506,9 @@ mod tests {
         fn healthy(&self) -> bool {
             !self.failed.get()
         }
+        fn fault(&mut self) -> Option<String> {
+            self.fault.borrow_mut().take()
+        }
     }
 
     fn headset() -> DeviceSelection {
@@ -520,6 +534,22 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn an_outage_says_which_device_failed_and_why() {
+        let w = World::new();
+        let mut m = manager(&w);
+        w.fault.replace(Some(
+            "Casque « Arctis 7 » : device lost [DeviceNotAvailable]".into(),
+        ));
+        m.lost();
+        let error = m.status().last_error.clone().unwrap();
+        assert!(
+            error.contains("(Casque « Arctis 7 » : device lost [DeviceNotAvailable])"),
+            "{error}"
+        );
+        assert!(w.fault.borrow().is_none(), "the cause is consumed once");
     }
 
     #[test]
