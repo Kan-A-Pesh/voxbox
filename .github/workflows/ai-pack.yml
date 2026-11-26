@@ -1,7 +1,7 @@
 name: AI voices pack
 
 # Heavy (PyTorch CPU, ~1 GB): rebuilt only when the pack changes or on demand,
-# then published as its own release « VoxBox - Voix IA N » (tag ai-pack-N).
+# then published as its own release « VoxBox - Voix IA N » (tag ai-pack-N) from main.
 on:
   workflow_dispatch:
   push:
@@ -14,6 +14,15 @@ on:
       # Any workflow change: a pack release skipped because the workflows
       # changed meanwhile is rebuilt by this newer run.
       - .github/workflows/**
+  # Pull requests touching the pack build it on Windows (and run its smoke tests, the only
+  # place the embedded runtime and the job-object memory ceiling are exercised) without
+  # publishing: the publish job below only runs on main.
+  pull_request:
+    paths:
+      - scripts/build_ai_pack.ps1
+      - installer/ai-pack.nsi
+      - converter/**
+      - .github/workflows/ai-pack.yml
 
 # No concurrency group: each run publishes its own ai-pack-N release, so runs
 # never conflict, and a group would let a rerun evict a pending newer build.

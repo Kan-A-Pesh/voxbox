@@ -3,10 +3,17 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read},
     path::Path,
-    process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Child, Command, Stdio},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Arc, Mutex,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+/// A conversion takes a few minutes on CPU: past this, the converter is killed (hung or fed a
+/// checkpoint that makes it work forever).
+const CONVERSION_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 pub(crate) fn read_meta(dir: &Path) -> Result<AiModelMeta> {
     let meta: AiModelMeta = serde_json::from_slice(&fs::read(dir.join("meta.json"))?)
@@ -49,11 +56,39 @@ pub fn list_models(models_dir: &Path) -> Result<Vec<AiModelMeta>> {
     Ok(models)
 }
 
+/// Polls without holding the lock, so the watchdog can still kill the child meanwhile.
+fn wait_child(child: &Mutex<Child>) -> Result<std::process::ExitStatus> {
+    loop {
+        let exited = child
+            .lock()
+            .map_err(|_| RvcError::Conversion("processus de conversion inaccessible".into()))?
+            .try_wait()?;
+        if let Some(status) = exited {
+            return Ok(status);
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// API level declared by the installed converter script (`CONVERTER_API = <n>` on its own line),
+/// or 0 for a script that predates it. Older AI packs keep their script across app updates.
+pub fn converter_api(script: &Path) -> u32 {
+    let Ok(source) = fs::read_to_string(script) else {
+        return 0;
+    };
+    source
+        .lines()
+        .find_map(|line| line.strip_prefix("CONVERTER_API = "))
+        .and_then(|value| value.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 pub(crate) fn parse_progress(line: &str) -> Option<f32> {
     let value: f32 = line.trim().strip_prefix("PROGRESS ")?.parse().ok()?;
     (value.is_finite() && (0.0..=1.0).contains(&value)).then_some(value)
 }
 
+/// Imports a checkpoint the user picked on their own machine (legacy PyTorch format accepted).
 pub fn import_model(
     converter: &ConverterPaths,
     pth: &Path,
@@ -61,6 +96,53 @@ pub fn import_model(
     name: &str,
     models_dir: &Path,
     progress: &mut dyn FnMut(f32),
+) -> Result<AiModelMeta> {
+    import_model_within(
+        converter,
+        pth,
+        index,
+        name,
+        models_dir,
+        progress,
+        CONVERSION_TIMEOUT,
+        false,
+    )
+}
+
+/// Imports a checkpoint downloaded from an unknown source: the converter runs with
+/// `--untrusted`: PyTorch >= 2.10, zip format only, directory and metadata sizes bounded before
+/// PyTorch reads them, tensors memory-mapped, and an OS memory ceiling (4 GiB: a Windows job
+/// object, `RLIMIT_AS` elsewhere) set before the checkpoint is loaded. Needs `converter_api` >= 3.
+/// An online archive's `.index` is never imported.
+pub fn import_online_model(
+    converter: &ConverterPaths,
+    pth: &Path,
+    name: &str,
+    models_dir: &Path,
+    progress: &mut dyn FnMut(f32),
+) -> Result<AiModelMeta> {
+    import_model_within(
+        converter,
+        pth,
+        None,
+        name,
+        models_dir,
+        progress,
+        CONVERSION_TIMEOUT,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn import_model_within(
+    converter: &ConverterPaths,
+    pth: &Path,
+    index: Option<&Path>,
+    name: &str,
+    models_dir: &Path,
+    progress: &mut dyn FnMut(f32),
+    timeout: Duration,
+    untrusted: bool,
 ) -> Result<AiModelMeta> {
     if !pth.is_file() || index.is_some_and(|p| !p.is_file()) {
         return Err(RvcError::ModelNotFound(pth.to_path_buf()));
@@ -102,6 +184,9 @@ pub fn import_model(
         if let Some(index) = index {
             command.arg("--index").arg(index);
         }
+        if untrusted {
+            command.arg("--untrusted");
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -131,6 +216,25 @@ pub fn import_model(
             }
             Ok(String::from_utf8_lossy(&tail).into_owned())
         });
+        // Kills the converter past `timeout`, until it has exited: a converter that closes its
+        // stdout and keeps running is killed too.
+        let child = Arc::new(Mutex::new(child));
+        let (finished, wait_finish) = mpsc::channel::<()>();
+        let watchdog = {
+            let child = Arc::clone(&child);
+            std::thread::spawn(move || {
+                let expired = matches!(
+                    wait_finish.recv_timeout(timeout),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                );
+                if expired {
+                    if let Ok(mut child) = child.lock() {
+                        let _ = child.kill();
+                    }
+                }
+                expired
+            })
+        };
         let mut last = 0.0;
         let mut read_error = None;
         for line in BufReader::new(stdout).lines() {
@@ -149,10 +253,22 @@ pub fn import_model(
                 }
             }
         }
-        let status = child.wait()?;
+        // Disarm the watchdog only once the process has exited, not at stdout EOF.
+        let status = wait_child(&child);
+        let _ = finished.send(());
+        let timed_out = watchdog.join().map_err(|_| {
+            RvcError::Conversion("surveillance de la conversion interrompue".into())
+        })?;
+        let status = status?;
         let stderr = errors
             .join()
             .map_err(|_| RvcError::Conversion("lecture stderr interrompue".into()))??;
+        if timed_out {
+            return Err(RvcError::Conversion(format!(
+                "conversion arrêtée après {} minutes sans se terminer",
+                timeout.as_secs() / 60
+            )));
+        }
         if let Some(e) = read_error {
             return Err(e.into());
         }
@@ -266,6 +382,94 @@ impl FeatureIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn a_hung_converter_is_killed_after_the_timeout() {
+        // Stands in for python: ignores its arguments and never finishes.
+        assert_hung_converter_is_killed("#!/bin/sh\nexec sleep 30\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_converter_that_closes_stdout_and_hangs_is_killed_too() {
+        assert_hung_converter_is_killed("#!/bin/sh\nexec >&-\nexec sleep 30\n");
+    }
+
+    #[cfg(unix)]
+    fn assert_hung_converter_is_killed(script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("python");
+        fs::write(&python, script).unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+        let pth = dir.path().join("model.pth");
+        fs::write(&pth, b"weights").unwrap();
+        let models = dir.path().join("models");
+        let converter = ConverterPaths {
+            python_exe: python,
+            script: dir.path().join("convert_rvc.py"),
+        };
+        let started = std::time::Instant::now();
+        let result = super::import_model_within(
+            &converter,
+            &pth,
+            None,
+            "Voix",
+            &models,
+            &mut |_| {},
+            Duration::from_millis(300),
+            false,
+        );
+        assert!(
+            matches!(&result, Err(RvcError::Conversion(m)) if m.contains("arrêtée")),
+            "{result:?}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(fs::read_dir(&models).unwrap().count(), 0, "staging removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn only_an_online_import_runs_the_converter_untrusted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("python");
+        // Stands in for python: reports its arguments, then fails.
+        fs::write(&python, "#!/bin/sh\necho \"args: $*\" >&2\nexit 1\n").unwrap();
+        fs::set_permissions(&python, fs::Permissions::from_mode(0o755)).unwrap();
+        let pth = dir.path().join("model.pth");
+        fs::write(&pth, b"weights").unwrap();
+        let models = dir.path().join("models");
+        let converter = ConverterPaths {
+            python_exe: python,
+            script: dir.path().join("convert_rvc.py"),
+        };
+        let local = super::import_model(&converter, &pth, None, "Voix", &models, &mut |_| {});
+        assert!(
+            matches!(&local, Err(RvcError::Conversion(m)) if m.contains("args:") && !m.contains("--untrusted")),
+            "{local:?}"
+        );
+        let online = super::import_online_model(&converter, &pth, "Voix", &models, &mut |_| {});
+        assert!(
+            matches!(&online, Err(RvcError::Conversion(m)) if m.contains("--untrusted")),
+            "{online:?}"
+        );
+    }
+
+    #[test]
+    fn reads_the_converter_api_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("convert_rvc.py");
+        assert_eq!(super::converter_api(&script), 0, "missing script");
+        fs::write(&script, "import sys\n").unwrap();
+        assert_eq!(super::converter_api(&script), 0, "older script");
+        fs::write(&script, "import sys\nCONVERTER_API = 2\nVENDOR = 1\n").unwrap();
+        assert_eq!(super::converter_api(&script), 2);
+        let repo_script =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../converter/convert_rvc.py");
+        assert!(super::converter_api(&repo_script) >= 3, "shipped converter");
+    }
+
     #[test]
     fn progress_rejects_invalid_values() {
         assert_eq!(parse_progress("PROGRESS 0.42\n"), Some(0.42));

@@ -145,6 +145,8 @@ pub fn run() {
             commands::open_logs_folder,
             commands::log_client_error,
             commands::myinstants_play,
+            commands::voicemodels_search,
+            commands::voicemodels_add,
         ])
         .run(tauri::generate_context!())
         .expect("VoxBox n'a pas pu démarrer");

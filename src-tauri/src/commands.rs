@@ -10,6 +10,7 @@ use voxbox_dsp::{EffectSpec, VoicePreset};
 use voxbox_engine::Devices;
 use voxbox_myinstants::{RemoteSound, SearchPage};
 use voxbox_rvc::{AiModelMeta, ConverterPaths};
+use voxbox_voicemodels::ModelPage;
 
 use crate::hotkeys::{HotkeyAction, HotkeyBinding};
 use crate::state::{AppError, AppResult, AppState, Snapshot};
@@ -392,15 +393,7 @@ pub fn import_ai_model(
     if name.is_empty() {
         return Err(crate::store::StoreError::EmptyName.into());
     }
-    let converter = ConverterPaths {
-        python_exe: state.resources.python_exe.clone(),
-        script: state.resources.converter_script.clone(),
-    };
-    if !converter.python_exe.exists() {
-        return Err(AppError::Other(String::from(
-            "le convertisseur de voix IA n'est pas installé : installez le pack « VoxBox - Voix IA »",
-        )));
-    }
+    let converter = ai_converter(&state)?;
     let models_dir = state.store.lock().models_dir();
     let mut progress = |p: f32| {
         let _ = app.emit(
@@ -418,6 +411,20 @@ pub fn import_ai_model(
     )?;
     state.emit_snapshot(&app);
     Ok(meta)
+}
+
+/// The model converter of the AI add-on, or why it is missing.
+fn ai_converter(state: &AppState) -> AppResult<ConverterPaths> {
+    let converter = ConverterPaths {
+        python_exe: state.resources.python_exe.clone(),
+        script: state.resources.converter_script.clone(),
+    };
+    if !converter.python_exe.exists() {
+        return Err(AppError::Other(String::from(
+            "le convertisseur de voix IA n'est pas installé : installez le pack « VoxBox - Voix IA »",
+        )));
+    }
+    Ok(converter)
 }
 
 #[tauri::command(async)]
@@ -477,4 +484,57 @@ pub fn open_logs_folder(app: AppHandle) -> AppResult<()> {
         .spawn()
         .map_err(|e| AppError::Other(format!("impossible d'ouvrir {} : {e}", dir.display())))?;
     Ok(())
+}
+
+/// Converter hardening a downloaded checkpoint needs (see `CONVERTER_API` in convert_rvc.py).
+const ONLINE_CONVERTER_API: u32 = 3;
+
+#[tauri::command]
+pub async fn voicemodels_search(query: String, page: u32) -> AppResult<ModelPage> {
+    blocking(move || Ok(voxbox_voicemodels::Client::new().search(&query, page.max(1))?)).await
+}
+
+/// Downloads a voice-models.com zip, extracts its `.pth` and imports it like `import_ai_model`.
+/// The archive's `.index` is not imported: the converter reads it with `faiss.read_index`,
+/// which is unsafe on files from an unknown source (the checkpoint uses `weights_only=True`). Emits "voicemodels-progress" { stage: "download" | "convert", progress }.
+#[tauri::command]
+pub async fn voicemodels_add(app: AppHandle, url: String, name: String) -> AppResult<AiModelMeta> {
+    blocking(move || {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(crate::store::StoreError::EmptyName.into());
+        }
+        let state = app.state::<AppState>();
+        // Checked first: no point downloading 200 MB without a converter able to take it.
+        let converter = ai_converter(&state)?;
+        if voxbox_rvc::converter_api(&converter.script) < ONLINE_CONVERTER_API {
+            return Err(AppError::Other(String::from(
+                "le pack « VoxBox - Voix IA » installé est trop ancien pour ajouter des modèles en ligne : installe sa dernière version (l'import depuis tes fichiers reste possible)",
+            )));
+        }
+        let models_dir = state.store.lock().models_dir();
+        let emit = |stage: &str, p: f32| {
+            let _ = app.emit(
+                "voicemodels-progress",
+                serde_json::json!({ "stage": stage, "progress": p.clamp(0.0, 1.0) }),
+            );
+        };
+        let meta = crate::state::with_download_dir(&models_dir, |tmp| {
+            let client = voxbox_voicemodels::Client::new();
+            let zip = client.download(&url, tmp, &mut |p| emit("download", p))?;
+            let pth = voxbox_voicemodels::extract_model(&zip, &tmp.join("model"))?;
+            let _ = fs::remove_file(&zip);
+            emit("convert", 0.0);
+            Ok(voxbox_rvc::import_online_model(
+                &converter,
+                &pth,
+                name,
+                &models_dir,
+                &mut |p| emit("convert", p),
+            )?)
+        })?;
+        state.emit_snapshot(&app);
+        Ok(meta)
+    })
+    .await
 }

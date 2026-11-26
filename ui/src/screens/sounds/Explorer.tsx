@@ -1,28 +1,14 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { RemoteSound } from "../../ipc/contract";
-import { errorMessage, useVox } from "../../state/store";
+import { useVox } from "../../state/store";
 import { useDebounced } from "../../lib/useDebounced";
-import { logClientError } from "../../lib/clientLog";
 import { sendSoundCommand } from "../../lib/soundCommands";
+import { MAX_EMPTY_AUTO_PAGES, usePagedFeed, type FetchPage } from "../../lib/usePagedFeed";
 import { onGridKeyDown } from "../../lib/gridNav";
 import { PixelIcon } from "../../components/PixelIcon";
 import { EmptyState, ErrorPanel, IconButton } from "../../components/Controls";
 
 export const SEARCH_DEBOUNCE_MS = 300;
-
-type Feed = {
-  query: string;
-  sounds: RemoteSound[];
-  page: number;
-  hasMore: boolean;
-  /** Pages in a row that brought no new sound (the site's lists overlap). */
-  stale: number;
-  loading: boolean;
-  error: string | null;
-};
-
-/** After this many pages in a row with nothing new, scrolling stops loading on its own ("Charger plus" still works). */
-const MAX_STALE_PAGES = 3;
 
 export function Explorer({ query: input, onClearQuery, onPendingChange }: {
   query: string;
@@ -32,9 +18,20 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
 }) {
   const { backend, snapshot, setSnapshot, call, soundCall, notify } = useVox();
   const query = useDebounced(input.trim(), SEARCH_DEBOUNCE_MS);
-  const [feed, setFeed] = useState<Feed>({ query, sounds: [], page: 0, hasMore: true, stale: 0, loading: true, error: null });
-  const request = useRef(0);
-  const sentinel = useRef<HTMLDivElement>(null);
+  const fetchPage = useCallback<FetchPage<RemoteSound>>(
+    async (q, page) => {
+      const res = q
+        ? await backend.invoke("myinstants_search", { query: q, page })
+        : await backend.invoke("myinstants_trending", { page });
+      return { items: res.sounds, hasMore: res.hasMore };
+    },
+    [backend],
+  );
+  // Pages can overlap (the site's lists move): each sound is kept once, by its mp3.
+  const { feed, loadNext, retry, sentinel } = usePagedFeed(query, fetchPage, {
+    key: soundKey,
+    logContext: "MyInstants (page suivante)",
+  });
   // The last playback of each MyInstants sound (its id and whether it went to
   // everyone or the headset only), and the ones still downloading.
   const [playback, setPlayback] = useState<Record<string, { id: string; mode: Mode }>>({});
@@ -43,67 +40,6 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
   const busy = useRef(new Set<string>());
   // Sounds of this screen that "Tout arrêter" can stop, downloading ones included.
   useEffect(() => onPendingChange?.(starting.size + Object.keys(playback).length), [starting, playback, onPendingChange]);
-
-  const load = useCallback(
-    async (q: string, page: number) => {
-      const id = ++request.current;
-      setFeed((f) => ({ ...(page === 1 ? { query: q, sounds: [], page: 0, hasMore: true, stale: 0 } : f), loading: true, error: null }));
-      try {
-        const res = q
-          ? await backend.invoke("myinstants_search", { query: q, page })
-          : await backend.invoke("myinstants_trending", { page });
-        if (id !== request.current) return;
-        setFeed((f) => {
-          // Pages can overlap (the site's lists move): keep each sound once. A page of
-          // repeats can still have new ones after it, so only several in a row end the list.
-          const known = new Set(page === 1 ? [] : f.sounds.map((s) => s.mp3Url));
-          const fresh = res.sounds.filter((s) => !known.has(s.mp3Url) && known.add(s.mp3Url));
-          const stale = fresh.length > 0 ? 0 : (page === 1 ? 0 : f.stale) + 1;
-          return {
-            query: q,
-            sounds: page === 1 ? fresh : [...f.sounds, ...fresh],
-            page,
-            hasMore: res.hasMore,
-            stale,
-            loading: false,
-            error: null,
-          };
-        });
-      } catch (e) {
-        if (id !== request.current) return;
-        // The first page's failure is shown (and logged) by an error panel; later ones inline.
-        if (page > 1) logClientError("MyInstants (page suivante)", errorMessage(e));
-        setFeed((f) => ({ ...f, loading: false, error: errorMessage(e) }));
-      }
-    },
-    [backend],
-  );
-
-  useEffect(() => {
-    void load(query, 1);
-  }, [query, load]);
-
-  // Infinite scroll stops on an error; only the explicit "Réessayer" retries the failed page.
-  const loadMore = useCallback(() => {
-    if (!feed.loading && feed.hasMore && !feed.error) void load(feed.query, feed.page + 1);
-  }, [feed, load]);
-  // Scrolling loads on its own, except after several pages of repeats in a row.
-  const autoLoad = useCallback(() => {
-    if (feed.stale < MAX_STALE_PAGES) loadMore();
-  }, [feed.stale, loadMore]);
-  const retry = useCallback(() => {
-    if (!feed.loading) void load(feed.query, feed.page + 1);
-  }, [feed, load]);
-
-  useEffect(() => {
-    const el = sentinel.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && autoLoad(), {
-      rootMargin: "300px",
-    });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [autoLoad]);
 
   // A playback counts from its confirmed start until the engine says it ended,
   // whether or not a progress event arrived yet.
@@ -218,24 +154,24 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
     return true;
   }
 
-  const initialLoading = feed.loading && feed.sounds.length === 0;
+  const initialLoading = feed.loading && feed.items.length === 0;
 
   return (
     <div className="explorer">
       <p className="hint explorer__caption">
-        {query ? `Résultats pour « ${query} »` : "Sons populaires sur MyInstants"} · seule fonction en ligne de VoxBox
+        {query ? `Résultats pour « ${query} »` : "Sons populaires sur MyInstants"} · nécessite internet
       </p>
-      {feed.error && feed.sounds.length === 0 ? (
+      {feed.error && feed.items.length === 0 ? (
         <ErrorPanel
           title="MyInstants est injoignable"
           message={`Vérifie ta connexion internet : ta banque locale, elle, fonctionne hors ligne. Détail : ${feed.error}`}
-          action={<button type="button" className="btn" onClick={() => load(feed.query, 1)}>Réessayer</button>}
+          action={<button type="button" className="btn" onClick={retry}>Réessayer</button>}
         />
       ) : initialLoading ? (
         <div className="remote-grid" aria-busy="true" aria-label="Chargement des sons">
           {Array.from({ length: 12 }, (_, i) => <div key={i} className="remote remote--skeleton" />)}
         </div>
-      ) : feed.sounds.length === 0 ? (
+      ) : feed.items.length === 0 ? (
         <EmptyState
           icon="search"
           title={`Aucun son pour « ${feed.query} »`}
@@ -246,7 +182,7 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
       ) : (
         <>
           <ul className="remote-grid" aria-label="Sons MyInstants" onKeyDown={onGridKeyDown}>
-            {feed.sounds.map((s, i) => (
+            {feed.items.map((s, i) => (
               <RemoteTile
                 key={`${s.pageUrl}-${i}`}
                 sound={s}
@@ -270,8 +206,8 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
               </p>
             ) : feed.hasMore ? (
               <>
-                {feed.stale >= MAX_STALE_PAGES ? <p className="hint">Les dernières pages n'apportaient rien de nouveau.</p> : null}
-                <button type="button" className="btn btn--ghost" onClick={loadMore}>Charger plus</button>
+                {feed.emptyPages >= MAX_EMPTY_AUTO_PAGES ? <p className="hint">Les dernières pages n'apportaient rien de nouveau.</p> : null}
+                <button type="button" className="btn btn--ghost" onClick={loadNext}>Charger plus</button>
               </>
             ) : (
               <p className="hint">Fin des résultats.</p>
@@ -284,6 +220,8 @@ export function Explorer({ query: input, onClearQuery, onPendingChange }: {
 }
 
 type Mode = "play" | "preview";
+
+const soundKey = (s: RemoteSound) => s.mp3Url;
 
 /** Playback ids of MyInstants sounds: `myinstants:<mp3 url>#<unique>` (see `play_remote` in src-tauri/src/state.rs). */
 const REMOTE_ID_PREFIX = "myinstants:";

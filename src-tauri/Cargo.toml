@@ -30,6 +30,7 @@ voxbox-dsp.workspace = true
 voxbox-engine.workspace = true
 voxbox-rvc.workspace = true
 voxbox-myinstants.workspace = true
+voxbox-voicemodels.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Threading", "Win32_System_LibraryLoader"] }

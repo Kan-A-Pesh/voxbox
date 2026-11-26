@@ -664,3 +664,14 @@ div.identity { align-items: center; }
   .search { width: 180px; }
   .hk-row .hotkey { width: 180px; }
 }
+
+/* ---- voice-models.com explorer (AI import panel) ------------------------- */
+.vm { display: flex; flex-direction: column; gap: 16px; }
+.vm .search { width: 100%; }
+.vm-list { display: flex; flex-direction: column; }
+.vm-row { display: flex; flex-direction: column; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.vm-row__head { display: flex; align-items: center; gap: 8px 12px; }
+.vm-row__title { flex: 1; min-width: 0; font-weight: 500; overflow-wrap: anywhere; }
+.vm-row__size { flex: none; font: 12px var(--font-mono); color: var(--muted-dim); }
+.vm-row__head .btn { flex: none; }
+.vm-row__form { display: flex; flex-direction: column; gap: 8px; }

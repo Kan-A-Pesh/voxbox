@@ -16,7 +16,7 @@ mod inference;
 mod models;
 mod queue;
 mod stream;
-pub use models::{import_model, list_models};
+pub use models::{converter_api, import_model, import_online_model, list_models};
 use std::sync::{Arc, Mutex};
 pub use stream::{ErrorHandler, RvcStream};
 

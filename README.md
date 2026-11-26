@@ -1,9 +1,9 @@
 # VoxBox
 
-Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. Seuls l'onglet « MyInstants » de l'écran Sons et la recherche de mises à jour (releases GitHub, au lancement puis toutes les 6 h) utilisent Internet ; chaque son ajouté est téléchargé et fonctionne ensuite hors ligne.
+Changeur de voix et banque de sons pour **Windows**, 100 % local : tout le traitement de la voix (effets, voix IA) tourne sur le PC. Seuls l'onglet « MyInstants » de l'écran Sons, l'explorateur voice-models.com de l'import de voix IA et la recherche de mises à jour (releases GitHub, au lancement puis toutes les 6 h) utilisent Internet ; chaque son ou modèle ajouté est téléchargé et fonctionne ensuite hors ligne.
 
 - Trois écrans : **Voix**, **Sons**, **Réglages**. 22 voix prêtes à l'emploi (Villageois, Robot, Démon, Chipmunk, Géant, Radio, Cathédrale, Alien...) ; un panneau latéral de l'écran Voix sert à créer, dupliquer ou modifier ses voix à partir de 18 effets.
-- Voix IA RVC (ONNX Runtime + DirectML : cartes NVIDIA et AMD), import de modèles `.pth` + `.index` avec conversion intégrée (filtre IA de l'écran Voix), 2 voix fournies.
+- Voix IA RVC (ONNX Runtime + DirectML : cartes NVIDIA et AMD), import de modèles `.pth` + `.index` avec conversion intégrée (filtre IA de l'écran Voix), recherche et ajout en un clic depuis voice-models.com, 2 voix fournies.
 - Banque de sons : glisser-déposer mp3/wav/ogg/flac, catégories, favoris, volume, boucle, recherche MyInstants façon Giphy. Les sons partent dans le micro **et** dans le casque, avec un volume pour chaque côté.
 - Raccourcis globaux (actifs en jeu) : changer de voix, activer ou couper la voix, push-to-talk maintenu, sons, M'entendre. Les boutons latéraux de souris sont pris en charge.
 - Anti-bruit (RNNoise), « M'entendre », démarrage réduit, icône dans la zone de notification.
@@ -28,6 +28,7 @@ crates/voxbox-dsp         effets temps réel, 22 voix, catalogue des effets (Rus
 crates/voxbox-engine      moteur audio : WASAPI (cpal), anti-bruit, PTT, mixeur, sorties CABLE + casque
 crates/voxbox-rvc         voix IA RVC v2 en streaming (ONNX Runtime chargé dynamiquement)
 crates/voxbox-myinstants  recherche / téléchargement MyInstants (analyse HTML, pas d'API officielle)
+crates/voxbox-voicemodels recherche voice-models.com, téléchargement et extraction des zips de modèles RVC
 src-tauri                 app Tauri 2 : commandes, stockage JSON, raccourcis globaux (hooks bas niveau), tray
 ui                        interface React (pixel art épuré : Voix, Sons, Réglages), mock intégré pour le navigateur
 converter                 conversion .pth → ONNX, runtime Python embarqué (pack Voix IA)
@@ -52,6 +53,7 @@ Pour écouter une voix sans lancer l'app : `cargo run -p voxbox-dsp --example re
 
 - **VB-CABLE** est un donationware de VB-Audio (www.vb-cable.com), toutes les participations sont les bienvenues. Le pack officiel est redistribué tel quel et installé par son propre setup, comme le permet https://vb-audio.com/Services/licensing.htm. **En entreprise, quand les employés ne peuvent ni identifier VB-CABLE ni le financer, il faut acheter des licences VB-CABLE** ; un usage interne n'en dispense pas.
 - **MyInstants** n'a pas d'API officielle : l'app lit les pages publiques du site, ce qui peut casser si le site change. L'analyse est isolée dans `crates/voxbox-myinstants/src/parser.rs` et testée sur des pages enregistrées. Les droits des sons restent ceux de leurs auteurs.
+- **voice-models.com** n'a pas d'API officielle non plus : l'app lit la liste publique (`fetch_data.php`), analysée dans `crates/voxbox-voicemodels/src/parser.rs` et testée sur des réponses enregistrées. Les zips (huggingface.co le plus souvent) sont téléchargés en https, limités à 1 Go ; les liens Google Drive ne sont pas pris en charge. Seul le `.pth` est importé (chargé avec `weights_only=True` par PyTorch 2.10 ou plus récent, ses métadonnées bornées avant lecture, ses poids projetés en mémoire depuis le fichier, et le convertisseur limité à 4 Go de mémoire par le système) : l'`.index` d'une archive téléchargée n'est pas lu, car `faiss.read_index` n'est pas sûr sur un fichier de source inconnue. L'ajout en ligne exige un pack « VoxBox - Voix IA » récent (convertisseur avec `CONVERTER_API = 3`, qui borne l'architecture du modèle avant de le construire et borne ce qu'il charge en mémoire avant de l'avoir vérifié) ; avec un pack plus ancien, l'app demande de le mettre à jour. Les modèles appartiennent à leurs auteurs.
 - **Voix IA fournies** : modèles RVC VCTK p231 et p226 de Nekochu (Apache-2.0), entraînés sur le corpus CSTR VCTK (CC BY 4.0, Yamagishi, Veaux, MacDonald, University of Edinburgh). ContentVec (MIT) et RMVPE (Apache-2.0) : voir `converter/assets.json` et `converter/licenses/`. ONNX Runtime (MIT) et DirectML (licence redistribuable Microsoft) sont copiés avec leurs licences dans le pack.
 
 ## Limites connues (V1)
@@ -69,4 +71,4 @@ Pour écouter une voix sans lancer l'app : `cargo run -p voxbox-dsp --example re
 4. Raccourcis : Ctrl+Alt+1..9 en jeu, Ctrl+Alt+V pour couper la voix, push-to-talk maintenu.
 5. Sons : glisser un mp3, le jouer (il doit s'entendre dans Discord et dans le casque), tester boucle et stop. Ajouter un son depuis MyInstants.
 6. Débrancher le casque sans rien toucher : un message nomme le périphérique en cause. Le rebrancher : en quelques secondes « Son rétabli. » s'affiche tout seul, et Réglages montre de nouveau le casque et le micro choisis (si un autre micro est utilisé en attendant, Réglages le signale). En cas de souci, le journal est dans `%APPDATA%\com.voxbox.app\logs\voxbox.log`.
-7. Pack Voix IA : voix « VCTK p231 », vérifier le backend affiché (DirectML) et la latence, puis importer un `.pth`.
+7. Pack Voix IA : voix « VCTK p231 », vérifier le backend affiché (DirectML) et la latence, puis importer un `.pth`, et ajouter un modèle depuis l'onglet voice-models.com (progression du téléchargement puis de la conversion).

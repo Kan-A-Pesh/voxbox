@@ -1,9 +1,12 @@
 // In-memory backend used when the UI runs outside Tauri (browser dev, screenshots, tests).
 // It mirrors the contract semantics of src-tauri/src/commands.rs closely enough to drive every screen.
 import type { AvailableUpdate, Backend, CommandArgs, CommandName, CommandResult, EventName, FileDropEvent, Unlisten } from "./backend";
-import type { DeviceSelection, Devices, Events, RemoteSound, SearchPage, Snapshot, Sound, VoicePreset, HotkeyAction } from "./contract";
+import type {
+  AiModelMeta, DeviceSelection, Devices, Events, ModelPage, RemoteSound, SearchPage, Snapshot, Sound, VoicePreset, HotkeyAction,
+} from "./contract";
 import {
   AI_MODELS, AI_VOICES, BUILTIN_VOICES, CUSTOM_VOICES, EFFECT_CATALOG, HOTKEYS, MYINSTANTS_TITLES, SETTINGS, SOUNDS,
+  VOICE_MODEL_TITLES,
 } from "./mockData";
 import { beepWavDataUri } from "../lib/beep";
 import { sameAction } from "../lib/hotkeys";
@@ -26,6 +29,8 @@ export interface MockOptions {
   unpluggedHeadset?: boolean;
   /** A newer release is published (null: this version is the latest). */
   update?: MockUpdate | null;
+  /** Simulate voice-models.com being unreachable. */
+  voicemodelsOffline?: boolean;
 }
 
 export interface MockUpdate {
@@ -94,6 +99,7 @@ export interface MockBackend extends Backend {
 }
 
 const PAGE_SIZE = 24;
+const VOICE_MODELS_PAGE_SIZE = 25;
 const clone = <T,>(v: T): T => structuredClone(v);
 
 function slug(s: string) {
@@ -235,6 +241,43 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       sounds.push(remote(i >= pool.length ? `${title} (remix ${Math.floor(i / pool.length)})` : title, i));
     }
     return { sounds, hasMore: start + PAGE_SIZE < total };
+  }
+
+  /** Same outcome as voxbox_rvc::import_model + the store: the model and its AI voice. */
+  function registerAiModel(name: string, hasIndex: boolean): AiModelMeta {
+    const id = `ai-${slug(name) || "modele"}-${++importCounter}`;
+    const meta = { id, name, modelSampleRate: 40000, hasIndex, builtin: false, license: null };
+    state.aiModels.push(meta);
+    state.voices.push({
+      id: `voice-${id}`, name, description: "IA · RVC", icon: "mic", color: "#7fe7ff", category: "ai",
+      effects: [], aiModelId: id, builtin: false,
+    });
+    return meta;
+  }
+
+  /** voice-models.com: 25 rows per page, 3 pages for the whole catalogue. */
+  function voiceModels(query: string, page: number): ModelPage {
+    if (options.voicemodelsOffline) throw new Error("voice-models.com est injoignable : pas de connexion internet ?");
+    const q = slug(query);
+    const size = VOICE_MODELS_PAGE_SIZE;
+    const pool = q ? VOICE_MODEL_TITLES.filter((t) => slug(t).includes(q)) : VOICE_MODEL_TITLES;
+    const total = q ? pool.length : size * 3;
+    const start = (Math.max(1, page) - 1) * size;
+    const models = [];
+    for (let i = start; i < Math.min(start + size, total); i++) {
+      const base = pool[i % pool.length] ?? "Voix";
+      const title = i >= pool.length ? `${base} (v${Math.floor(i / pool.length) + 1})` : base;
+      const file = `${slug(title)}.zip`;
+      models.push({
+        title,
+        size: i % 9 === 8 ? "" : `${(48 + ((i * 37) % 160)).toFixed(2)} MB`,
+        downloadUrl: /drive/i.test(title)
+          ? `https://drive.google.com/uc?id=${slug(title)}`
+          : `https://huggingface.co/mock/models/resolve/main/${file}?download=true`,
+        pageUrl: `https://voice-models.com/model/${slug(title)}-${i}`,
+      });
+    }
+    return { models, hasMore: start + size < total };
   }
 
   function setHotkey(action: HotkeyAction, accelerator: string | null) {
@@ -425,20 +468,41 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
           if (progress >= 1) {
             clearInterval(timer);
             timers.delete(timer);
-            const id = `ai-${slug(name) || "modele"}-${++importCounter}`;
-            const meta = { id, name, modelSampleRate: 40000, hasIndex: indexPath !== null, builtin: false, license: null };
-            state.aiModels.push(meta);
-            state.voices.push({
-              id: `voice-${id}`, name, description: "IA · RVC", icon: "mic", color: "#7fe7ff", category: "ai",
-              effects: [], aiModelId: id, builtin: false,
-            });
-            resolve(meta);
+            resolve(registerAiModel(name, indexPath !== null));
           }
         }, aiImportStepMs);
         timers.add(timer);
       }),
     open_logs_folder: () => null,
     log_client_error: () => null,
+    voicemodels_search: ({ query, page }) => voiceModels(query, page),
+    voicemodels_add: ({ url, name }) =>
+      new Promise((resolve, reject) => {
+        if (!name.trim()) return reject(new Error("Le nom ne peut pas être vide."));
+        let stage: "download" | "convert" = "download";
+        let progress = 0;
+        emit("voicemodels-progress", { stage, progress });
+        const timer = setInterval(() => {
+          progress = Math.min(1, progress + 0.1);
+          emit("voicemodels-progress", { stage, progress });
+          if (progress < 1) return;
+          if (stage === "download" && /drive\.google/.test(url)) {
+            clearInterval(timer);
+            timers.delete(timer);
+            reject(new Error("Le fichier téléchargé n'est pas une archive zip (lien Google Drive ou page web ?) : ce modèle ne peut pas être ajouté automatiquement."));
+          } else if (stage === "download") {
+            stage = "convert";
+            progress = 0;
+            emit("voicemodels-progress", { stage, progress });
+          } else {
+            clearInterval(timer);
+            timers.delete(timer);
+            // Like the backend: only the .pth of an online archive is imported, never its .index.
+            resolve(registerAiModel(name.trim(), false));
+          }
+        }, aiImportStepMs);
+        timers.add(timer);
+      }),
     delete_ai_model: ({ id }) => {
       const m = state.aiModels.find((x) => x.id === id);
       if (!m) throw new Error(`Modèle introuvable : ${id}`);

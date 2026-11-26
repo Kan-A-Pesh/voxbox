@@ -20,11 +20,12 @@ const COVERED: Record<keyof Commands, true> = {
   play_sound: true, stop_sound: true, stop_all_sounds: true, myinstants_trending: true, myinstants_search: true,
   myinstants_add: true, set_hotkey: true, import_ai_model: true, delete_ai_model: true, open_logs_folder: true,
   log_client_error: true, myinstants_play: true, set_voice_favorite: true, begin_page: true,
+  voicemodels_search: true, voicemodels_add: true,
 };
 
 describe("mock backend honours the IPC contract", () => {
   it("covers every command", () => {
-    expect(Object.keys(COVERED)).toHaveLength(24);
+    expect(Object.keys(COVERED)).toHaveLength(26);
   });
 
   it("returns a complete snapshot with the 22 real presets, the 2 bundled AI voices and ~16 sounds", async () => {
@@ -175,6 +176,35 @@ describe("mock backend honours the IPC contract", () => {
     expect((await b.invoke("get_snapshot", {})).voices.some((v) => v.aiModelId === meta.id)).toBe(false);
     await expect(b.invoke("import_ai_model", { pthPath: "C:\\m\\x.onnx", indexPath: null, name: "X" })).rejects.toThrow(/\.pth/);
     await expect(b.invoke("delete_ai_model", { id: "vctk-p231" })).rejects.toThrow();
+  });
+
+  it("lists voice-models.com pages and adds a model with download then conversion progress", async () => {
+    const b = make();
+    const first = await b.invoke("voicemodels_search", { query: "", page: 1 });
+    expect(first.models).toHaveLength(25);
+    expect(first.hasMore).toBe(true);
+    expect((await b.invoke("voicemodels_search", { query: "", page: 3 })).hasMore).toBe(false);
+    const mario = await b.invoke("voicemodels_search", { query: "mario", page: 1 });
+    expect(mario.models.map((m) => m.title)).toEqual(["Mario (Super Mario 64) [RVC v2] [500 Epochs]"]);
+    expect(mario.hasMore).toBe(false);
+
+    const stages: string[] = [];
+    await b.listen("voicemodels-progress", (p) => stages.push(`${p.stage}:${p.progress.toFixed(1)}`));
+    const target = mario.models[0];
+    if (!target) throw new Error("fixture");
+    const meta = await b.invoke("voicemodels_add", { url: target.downloadUrl, name: "Mario" });
+    expect(stages[0]).toBe("download:0.0");
+    expect(stages).toContain("download:1.0");
+    expect(stages.at(-1)).toBe("convert:1.0");
+    expect(stages.indexOf("download:1.0")).toBeLessThan(stages.indexOf("convert:0.0"));
+    const snap = await b.invoke("get_snapshot", {});
+    expect(snap.voices.some((v) => v.aiModelId === meta.id && v.name === "Mario")).toBe(true);
+    expect(meta.hasIndex).toBe(false);
+
+    const drive = (await b.invoke("voicemodels_search", { query: "bowser", page: 1 })).models[0];
+    if (!drive) throw new Error("fixture");
+    await expect(b.invoke("voicemodels_add", { url: drive.downloadUrl, name: "Bowser" })).rejects.toThrow(/zip/);
+    await expect(make({ voicemodelsOffline: true }).invoke("voicemodels_search", { query: "", page: 1 })).rejects.toThrow(/injoignable/);
   });
 
   it("pushes snapshot-changed for external changes", async () => {

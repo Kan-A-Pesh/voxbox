@@ -100,3 +100,12 @@ export const MYINSTANTS_TITLES = [
   "Ascenseur – ding", "Klaxon de clown", "Corne de brume", "Batterie roulement", "Trompette fail", "Applaudissements",
   "Rires de sitcom", "Huée", "Criquets", "Duel western", "Chat qui miaule", "Bisou", "Explosion",
 ];
+
+/** voice-models.com titles as the site writes them (tags, epochs, authors' notes). */
+export const VOICE_MODEL_TITLES = [
+  "Mario (Super Mario 64) [RVC v2] [500 Epochs]", "Darth Vader (Star Wars) [RVC v2]", "Homer Simpson (RVC v2) (300 epochs)",
+  "Pikachu [RVC v2] [200 Epochs]", "GLaDOS - Portal 2 (RVC2) (240epoch) (RMVPE)", "Shrek [RVC v2] [Crepe] [350 Epochs]",
+  "SpongeBob SquarePants [RVC v2]", "Morgan Freeman (narrateur) [RVC v2] [600 Epochs]", "Luigi [RVC v2] [180 Epochs]",
+  "Geralt de Riv (VF) [RVC v2]", "Bowser [RVC v2] [Google Drive]", "Kermit the Frog (RVC v2) (450 epochs)",
+  "Optimus Prime [RVC v2] [1000 Epochs]", "Patrick Star [RVC v2]", "Yoda (Star Wars) [RVC v2] [250 Epochs]",
+];

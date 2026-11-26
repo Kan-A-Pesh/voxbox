@@ -209,6 +209,8 @@ pub enum AppError {
     Rvc(#[from] voxbox_rvc::RvcError),
     #[error(transparent)]
     MyInstants(#[from] voxbox_myinstants::MyInstantsError),
+    #[error(transparent)]
+    VoiceModels(#[from] voxbox_voicemodels::VoiceModelsError),
     #[error("{0}")]
     Other(String),
 }
@@ -562,17 +564,12 @@ impl AppState {
         use_file: impl FnOnce(&Path) -> AppResult<T>,
     ) -> AppResult<T> {
         let parent = self.store.lock().sounds_dir();
-        let tmp = parent.join(format!(".download-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&tmp)
-            .map_err(|e| AppError::Other(format!("dossier temporaire impossible : {e}")))?;
-        let result = voxbox_myinstants::Client::new()
-            .download(sound, &tmp)
-            .map_err(AppError::from)
-            .and_then(|path| use_file(&path));
-        if let Err(e) = std::fs::remove_dir_all(&tmp) {
-            tracing::warn!("dossier temporaire non supprimé ({}) : {e}", tmp.display());
-        }
-        result
+        with_download_dir(&parent, |tmp| {
+            voxbox_myinstants::Client::new()
+                .download(sound, tmp)
+                .map_err(AppError::from)
+                .and_then(|path| use_file(&path))
+        })
     }
 
     /// Plays a MyInstants sound without adding it to the bank: to everyone (mic +
@@ -698,6 +695,22 @@ impl AppState {
             tracing::warn!("événement snapshot-changed non envoyé : {e}");
         }
     }
+}
+
+/// Runs `work` in a fresh dot-folder under `parent` (lists of sounds and models skip
+/// dot-folders while they hold a partial download), then removes it whatever `work` returned.
+pub fn with_download_dir<T>(
+    parent: &Path,
+    work: impl FnOnce(&Path) -> AppResult<T>,
+) -> AppResult<T> {
+    let tmp = parent.join(format!(".download-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&tmp)
+        .map_err(|e| AppError::Other(format!("dossier temporaire impossible : {e}")))?;
+    let result = work(&tmp);
+    if let Err(e) = std::fs::remove_dir_all(&tmp) {
+        tracing::warn!("dossier temporaire non supprimé ({}) : {e}", tmp.display());
+    }
+    result
 }
 
 #[cfg(test)]

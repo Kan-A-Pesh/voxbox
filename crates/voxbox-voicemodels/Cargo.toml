@@ -1,0 +1,17 @@
+[package]
+name = "voxbox-voicemodels"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "voice-models.com search, model download and RVC zip extraction for VoxBox"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+scraper = "0.22"
+tempfile = "3"
+url = "2"
+zip = { version = "9.8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
