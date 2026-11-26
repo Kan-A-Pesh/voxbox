@@ -40,6 +40,25 @@ def test_faiss_flat_and_ivf(tmp_path):
         assert np.isfinite(np.frombuffer(raw[16:], dtype="<f4")).all()
 
 
+def test_index_runs_in_its_own_process(tmp_path, monkeypatch):
+    """faiss and torch each load their own OpenMP: they must never share a process."""
+    import faiss
+    vectors = np.random.default_rng(7).normal(size=(64,768)).astype(np.float32)
+    index = faiss.IndexFlatL2(768)
+    index.add(vectors)
+    source = tmp_path / "voice.index"
+    faiss.write_index(index, str(source))
+    calls = []
+    monkeypatch.setattr(converter, "convert_index", lambda *a, **k: calls.append(a))
+    converter.convert_index_isolated(source, tmp_path / "index.bin")
+    assert calls == [], "the index is converted by a child interpreter, not in this one"
+    raw = (tmp_path / "index.bin").read_bytes()
+    assert struct.unpack("<8sII", raw[:16])[:2] == (b"VOXIDX01", 768)
+    (tmp_path / "broken.index").write_bytes(b"not faiss")
+    with pytest.raises(ValueError, match="Conversion de l'index impossible"):
+        converter.convert_index_isolated(tmp_path / "broken.index", tmp_path / "x.bin")
+
+
 def test_rejects_wrong_checkpoint():
     for checkpoint in [{}, {"version":"v1","f0":1}, {"version":"v2","f0":0}]:
         with pytest.raises(ValueError): converter.validate_checkpoint(checkpoint)

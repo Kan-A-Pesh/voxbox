@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import type { RemoteSound } from "../../ipc/contract";
 import { errorMessage, useVox } from "../../state/store";
 import { useDebounced } from "../../lib/useDebounced";
+import { logClientError } from "../../lib/clientLog";
 import { onGridKeyDown } from "../../lib/gridNav";
 import { PixelIcon } from "../../components/PixelIcon";
 import { EmptyState, ErrorPanel } from "../../components/Controls";
@@ -13,14 +14,19 @@ type Feed = {
   sounds: RemoteSound[];
   page: number;
   hasMore: boolean;
+  /** Pages in a row that brought no new sound (the site's lists overlap). */
+  stale: number;
   loading: boolean;
   error: string | null;
 };
 
+/** After this many pages in a row with nothing new, scrolling stops loading on its own ("Charger plus" still works). */
+const MAX_STALE_PAGES = 3;
+
 export function Explorer({ query: input, onClearQuery }: { query: string; onClearQuery: () => void }) {
   const { backend, snapshot, setSnapshot, call, notify } = useVox();
   const query = useDebounced(input.trim(), SEARCH_DEBOUNCE_MS);
-  const [feed, setFeed] = useState<Feed>({ query, sounds: [], page: 0, hasMore: true, loading: true, error: null });
+  const [feed, setFeed] = useState<Feed>({ query, sounds: [], page: 0, hasMore: true, stale: 0, loading: true, error: null });
   const request = useRef(0);
   const sentinel = useRef<HTMLDivElement>(null);
   const audio = useRef<HTMLAudioElement>(null);
@@ -30,22 +36,32 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
   const load = useCallback(
     async (q: string, page: number) => {
       const id = ++request.current;
-      setFeed((f) => ({ ...(page === 1 ? { query: q, sounds: [], page: 0, hasMore: true } : f), loading: true, error: null }));
+      setFeed((f) => ({ ...(page === 1 ? { query: q, sounds: [], page: 0, hasMore: true, stale: 0 } : f), loading: true, error: null }));
       try {
         const res = q
           ? await backend.invoke("myinstants_search", { query: q, page })
           : await backend.invoke("myinstants_trending", { page });
         if (id !== request.current) return;
-        setFeed((f) => ({
-          query: q,
-          sounds: page === 1 ? res.sounds : [...f.sounds, ...res.sounds],
-          page,
-          hasMore: res.hasMore,
-          loading: false,
-          error: null,
-        }));
+        setFeed((f) => {
+          // Pages can overlap (the site's lists move): keep each sound once. A page of
+          // repeats can still have new ones after it, so only several in a row end the list.
+          const known = new Set(page === 1 ? [] : f.sounds.map((s) => s.mp3Url));
+          const fresh = res.sounds.filter((s) => !known.has(s.mp3Url) && known.add(s.mp3Url));
+          const stale = fresh.length > 0 ? 0 : (page === 1 ? 0 : f.stale) + 1;
+          return {
+            query: q,
+            sounds: page === 1 ? fresh : [...f.sounds, ...fresh],
+            page,
+            hasMore: res.hasMore,
+            stale,
+            loading: false,
+            error: null,
+          };
+        });
       } catch (e) {
         if (id !== request.current) return;
+        // The first page's failure is shown (and logged) by an error panel; later ones inline.
+        if (page > 1) logClientError("MyInstants (page suivante)", errorMessage(e));
         setFeed((f) => ({ ...f, loading: false, error: errorMessage(e) }));
       }
     },
@@ -60,6 +76,10 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
   const loadMore = useCallback(() => {
     if (!feed.loading && feed.hasMore && !feed.error) void load(feed.query, feed.page + 1);
   }, [feed, load]);
+  // Scrolling loads on its own, except after several pages of repeats in a row.
+  const autoLoad = useCallback(() => {
+    if (feed.stale < MAX_STALE_PAGES) loadMore();
+  }, [feed.stale, loadMore]);
   const retry = useCallback(() => {
     if (!feed.loading) void load(feed.query, feed.page + 1);
   }, [feed, load]);
@@ -67,12 +87,12 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
   useEffect(() => {
     const el = sentinel.current;
     if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && loadMore(), {
+    const io = new IntersectionObserver((entries) => entries.some((e) => e.isIntersecting) && autoLoad(), {
       rootMargin: "300px",
     });
     io.observe(el);
     return () => io.disconnect();
-  }, [loadMore]);
+  }, [autoLoad]);
 
   useEffect(() => () => audio.current?.pause(), []);
 
@@ -91,6 +111,7 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
     el.play().catch(() => {
       setPreviewing(null);
       setPreviewError(`Aperçu impossible pour « ${s.title} ».`);
+      logClientError("aperçu MyInstants", `Aperçu impossible pour « ${s.title} » (${s.mp3Url}).`);
     });
   }
 
@@ -123,7 +144,10 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
         preload="none"
         onEnded={() => setPreviewing(null)}
         onError={() => {
-          if (previewing) setPreviewError("Aperçu indisponible : vérifie ta connexion.");
+          if (previewing) {
+            setPreviewError("Aperçu indisponible : vérifie ta connexion.");
+            logClientError("aperçu MyInstants", `Aperçu indisponible (${previewing}).`);
+          }
           setPreviewing(null);
         }}
       />
@@ -172,7 +196,10 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
                 <button type="button" className="btn btn--small" onClick={retry}>Réessayer</button>
               </p>
             ) : feed.hasMore ? (
-              <button type="button" className="btn btn--ghost" onClick={loadMore}>Charger plus</button>
+              <>
+                {feed.stale >= MAX_STALE_PAGES ? <p className="hint">Les dernières pages n'apportaient rien de nouveau.</p> : null}
+                <button type="button" className="btn btn--ghost" onClick={loadMore}>Charger plus</button>
+              </>
             ) : (
               <p className="hint">Fin des résultats.</p>
             )}

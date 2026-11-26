@@ -157,7 +157,15 @@ pub fn import_model(
             return Err(e.into());
         }
         if !status.success() {
+            // The whole converter output goes to voxbox.log, where it can be copied.
+            tracing::error!(
+                "conversion de « {} » échouée ({status}) :\n{stderr}",
+                name.trim()
+            );
             return Err(RvcError::Conversion(format!("{status}: {stderr}")));
+        }
+        if !stderr.trim().is_empty() {
+            tracing::info!("convertisseur (« {} ») :\n{stderr}", name.trim());
         }
         let meta = read_meta(&staging)?;
         if meta.id != id || meta.builtin {

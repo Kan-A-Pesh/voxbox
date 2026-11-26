@@ -1,4 +1,5 @@
-import { useId, type ReactNode } from "react";
+import { useEffect, useId, type ReactNode } from "react";
+import { logClientError } from "../lib/clientLog";
 import { PixelIcon } from "./PixelIcon";
 import type { IconName } from "./icons";
 
@@ -164,7 +165,19 @@ export function EmptyState({ icon, title, children, action }: {
   );
 }
 
-export function ErrorPanel({ title, message, action }: { title: string; message: string; action?: ReactNode }) {
+/**
+ * `logged`: the message already comes from the app's log (engine status), so it
+ * is not written again. Every other error shown is copied to voxbox.log.
+ */
+export function ErrorPanel({ title, message, action, logged = false }: {
+  title: string;
+  message: string;
+  action?: ReactNode;
+  logged?: boolean;
+}) {
+  useEffect(() => {
+    if (!logged) logClientError(title, message);
+  }, [logged, title, message]);
   return (
     <div className="error-panel" role="alert">
       <PixelIcon name="warning" scale={2} />
