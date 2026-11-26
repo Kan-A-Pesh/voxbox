@@ -360,6 +360,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
         timers.add(timer);
       }),
     open_logs_folder: () => null,
+    log_client_error: () => null,
     delete_ai_model: ({ id }) => {
       const m = state.aiModels.find((x) => x.id === id);
       if (!m) throw new Error(`Modèle introuvable : ${id}`);

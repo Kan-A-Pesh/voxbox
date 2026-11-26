@@ -72,6 +72,7 @@ export function SettingsScreen() {
           <ErrorPanel
             title={status.restarting ? "Le son est coupé, nouvelle tentative automatique" : "Le son est coupé"}
             message={status.lastError}
+            logged
             action={
               <button type="button" className="link-btn" onClick={() => void call("open_logs_folder", {})}>
                 Ouvrir le dossier des journaux

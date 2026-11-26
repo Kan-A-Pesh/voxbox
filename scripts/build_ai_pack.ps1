@@ -60,5 +60,18 @@ foreach ($Voice in $Manifest) {
     $Meta | ConvertTo-Json -Depth 5 | Set-Content $MetaPath -Encoding UTF8
 }
 
+# 5. Smoke test the packaged converter with an index too (FAISS + PyTorch in the
+#    same import, the path users take with downloaded models). No OpenMP
+#    workaround variable may be set: the index must convert in its own process.
+if ($env:KMP_DUPLICATE_LIB_OK) { throw 'KMP_DUPLICATE_LIB_OK must not be set for the smoke test' }
+$SmokeIndex = Join-Path $Tmp 'smoke.index'
+& $Python -I -c "import faiss, numpy as np, sys; i = faiss.IndexFlatL2(768); i.add(np.random.default_rng(1).normal(size=(64, 768)).astype('float32')); faiss.write_index(i, sys.argv[1])" $SmokeIndex
+if ($LASTEXITCODE -ne 0) { throw 'Could not create the smoke-test index' }
+$First = $Manifest[0]
+$SmokeOut = Join-Path $Tmp 'smoke-with-index'
+& $Python -I (Join-Path $Converter 'convert_rvc.py') --pth (Join-Path $Tmp "$($First.id).pth") --index $SmokeIndex --output $SmokeOut --id smoke --name Smoke
+if ($LASTEXITCODE -ne 0) { throw 'Packaged converter failed with an index' }
+if (-not (Test-Path (Join-Path $SmokeOut 'index.bin'))) { throw 'Packaged converter wrote no index.bin' }
+
 Remove-Item $Tmp -Recurse -Force
 Write-Host "Voix IA pack ready in $OutputDir"

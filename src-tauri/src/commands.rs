@@ -368,6 +368,20 @@ pub fn delete_ai_model(app: AppHandle, state: State<'_, AppState>, id: String) -
     Ok(())
 }
 
+/// Writes an error the UI showed (or an uncaught one) to voxbox.log, where the
+/// user can copy it. Bounded: a runaway message cannot flood the log.
+#[tauri::command]
+pub fn log_client_error(context: String, message: String) {
+    const MAX: usize = 4000;
+    let clip = |text: &str, max: usize| -> String {
+        match text.char_indices().nth(max) {
+            Some((at, _)) => format!("{}… (tronqué)", &text[..at]),
+            None => text.to_owned(),
+        }
+    };
+    tracing::error!(target: "voxbox_app::ui", "{} : {}", clip(&context, 200), clip(&message, MAX));
+}
+
 /// Opens `<app data>/logs` in the file explorer so the user can send `voxbox.log`.
 #[tauri::command(async)]
 pub fn open_logs_folder(app: AppHandle) -> AppResult<()> {

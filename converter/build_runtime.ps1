@@ -23,8 +23,11 @@ try {
     Copy-Item (Join-Path $PSScriptRoot 'vendor') $OutputDir -Recurse
     Copy-Item (Join-Path $PSScriptRoot 'licenses') $OutputDir -Recurse
     $EmbeddedPython = Join-Path $OutputDir 'python.exe'
-    & $EmbeddedPython -I -c 'import torch, faiss, onnx, scipy; assert torch.__version__.startswith("2.6.0"); assert not torch.cuda.is_available()'
-    if ($LASTEXITCODE -ne 0) { throw 'Embedded runtime smoke test failed' }
+    # torch and faiss each bring an OpenMP runtime: never import them in one interpreter.
+    & $EmbeddedPython -I -c 'import torch, onnx, scipy; assert torch.__version__.startswith("2.6.0"); assert not torch.cuda.is_available()'
+    if ($LASTEXITCODE -ne 0) { throw 'Embedded runtime smoke test failed (torch)' }
+    & $EmbeddedPython -I -c 'import faiss, numpy'
+    if ($LASTEXITCODE -ne 0) { throw 'Embedded runtime smoke test failed (faiss)' }
     & $EmbeddedPython -I (Join-Path $OutputDir 'convert_rvc.py') --help
     if ($LASTEXITCODE -ne 0) { throw 'Converter smoke test failed' }
     # Pinning wheels does not remove their redistribution requirements. Retain all

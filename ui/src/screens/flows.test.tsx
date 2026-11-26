@@ -241,6 +241,33 @@ describe("MyInstants explorer", () => {
     expect(screen.getByRole("button", { name: "Réessayer" })).toBeInTheDocument();
   });
 
+  it("keeps each MyInstants sound once, goes past repeats, pauses scrolling after several", async () => {
+    const user = userEvent.setup();
+    const { backend, callsOf } = renderApp("sounds");
+    const invoke = backend.invoke.bind(backend);
+    // The live site has no "next" link: pages keep saying there may be more, and they
+    // overlap. Here page 2 repeats page 1, page 3 is new, then only repeats follow.
+    vi.spyOn(backend, "invoke").mockImplementation(((cmd: string, args: { page?: number }) =>
+      cmd === "myinstants_trending"
+        ? invoke("myinstants_trending", { page: args.page === 3 ? 2 : 1 }).then((p) => ({ ...p, hasMore: true }))
+        : invoke(cmd as never, args as never)) as typeof backend.invoke);
+    await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
+    const first = (await screen.findAllByRole("button", { name: /^Écouter / })).length;
+    const more = async () => user.click(await screen.findByRole("button", { name: "Charger plus" }));
+    await more();
+    await waitFor(() => expect(callsOf("myinstants_trending")).toHaveLength(2));
+    expect(screen.getAllByRole("button", { name: /^Écouter / })).toHaveLength(first);
+    await more();
+    await waitFor(() => expect(screen.getAllByRole("button", { name: /^Écouter / }).length).toBeGreaterThan(first));
+    const grown = screen.getAllByRole("button", { name: /^Écouter / }).length;
+    for (let i = 0; i < 3; i++) await more();
+    // Scrolling stops loading on its own, but "Charger plus" still reaches later pages.
+    expect(await screen.findByText(/n'apportaient rien de nouveau/)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Écouter / })).toHaveLength(grown);
+    expect(callsOf("myinstants_trending")).toHaveLength(6);
+    expect(screen.getByRole("button", { name: "Charger plus" })).toBeInTheDocument();
+  });
+
   it("retries a failed page from the pagination error", async () => {
     const user = userEvent.setup();
     const { backend, callsOf } = renderApp("sounds");

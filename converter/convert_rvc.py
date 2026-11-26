@@ -131,6 +131,25 @@ def convert_index(source: Path, destination: Path, max_centroids: int = 1024) ->
     write_index(vectors, destination)
 
 
+def convert_index_isolated(source: Path, destination: Path) -> None:
+    """Runs convert_index in its own interpreter.
+
+    faiss (libomp140) and PyTorch (libiomp5md) each bring their own OpenMP
+    runtime; loading both in one process aborts with "OMP: Error #15". The
+    index never shares a process with torch, so neither runtime is masked.
+    """
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-X", "utf8", str(Path(__file__).resolve()),
+         "--index-only", "--index", str(source), "--output", str(destination)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip() or f"code {result.returncode}"
+        raise ValueError(f"Conversion de l'index impossible : {detail}")
+
+
 def convert(pth: Path, index: Path | None, output: Path, model_id: str, name: str) -> dict:
     if not re.fullmatch(r"[A-Za-z0-9_-]+", model_id) or not name.strip():
         raise ValueError("Identifiant ou nom invalide.")
@@ -141,7 +160,7 @@ def convert(pth: Path, index: Path | None, output: Path, model_id: str, name: st
     sample_rate = export_model(pth, output / "model.onnx")
     progress(0.75)
     if index is not None:
-        convert_index(index, output / "index.bin")
+        convert_index_isolated(index, output / "index.bin")
     progress(0.95)
     meta = {"id": model_id, "name": name.strip(), "modelSampleRate": sample_rate,
             "hasIndex": index is not None, "builtin": False, "license": None}
@@ -152,14 +171,24 @@ def convert(pth: Path, index: Path | None, output: Path, model_id: str, name: st
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pth", required=True, type=Path)
+    parser.add_argument("--pth", type=Path)
     parser.add_argument("--index", type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--id", required=True)
-    parser.add_argument("--name", required=True)
+    parser.add_argument("--id")
+    parser.add_argument("--name")
+    # Internal: converts only --index into the --output file (see convert_index_isolated).
+    parser.add_argument("--index-only", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.index_only:
+        if args.index is None:
+            parser.error("--index-only requiert --index")
+    elif args.pth is None or args.id is None or args.name is None:
+        parser.error("--pth, --id et --name sont requis")
     try:
-        convert(args.pth, args.index, args.output, args.id, args.name)
+        if args.index_only:
+            convert_index(args.index, args.output)
+        else:
+            convert(args.pth, args.index, args.output, args.id, args.name)
     except Exception as error:
         print(f"Échec de conversion : {error}", file=sys.stderr, flush=True)
         return 1

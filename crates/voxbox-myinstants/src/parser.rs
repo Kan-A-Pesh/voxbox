@@ -70,7 +70,10 @@ pub fn parse_listing(html: &str, base_url: &str) -> SearchPage {
         });
     }
 
-    let has_more = document.select(&pagination_selector).any(|pagination| {
+    // The site no longer links the next page (it scrolls with JavaScript), but
+    // `?page=n` keeps working: a page with sounds may have a successor, an empty
+    // one is the end. An explicit "next" link still counts.
+    let has_next_link = document.select(&pagination_selector).any(|pagination| {
         pagination.select(&anchor_selector).any(|anchor| {
             let href = anchor.value().attr("href").unwrap_or_default();
             let is_next = anchor
@@ -83,7 +86,23 @@ pub fn parse_listing(html: &str, base_url: &str) -> SearchPage {
         })
     });
 
+    // When the page says "Page X of Y", that settles it.
+    let has_more = match page_of_total(html) {
+        Some((page, total)) => page < total,
+        None => has_next_link || !sounds.is_empty(),
+    };
     SearchPage { sounds, has_more }
+}
+
+/// "Page 50 of 50" as shown under the list (the first well-formed occurrence).
+fn page_of_total(html: &str) -> Option<(u32, u32)> {
+    html.match_indices("Page ").find_map(|(at, _)| {
+        let rest = &html[at + 5..];
+        let page: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        let rest = rest[page.len()..].strip_prefix(" of ")?;
+        let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        Some((page.parse().ok()?, total.parse().ok()?))
+    })
 }
 
 fn play_url_argument(onclick: &str) -> Option<String> {
@@ -160,6 +179,36 @@ mod tests {
         assert!(second.has_more);
         assert_fixture_sounds_are_well_formed(&first.sounds);
         assert_fixture_sounds_are_well_formed(&second.sounds);
+    }
+
+    #[test]
+    fn a_page_without_next_link_still_has_more_when_it_has_sounds() {
+        // Live page (2026-11): the site scrolls with JavaScript and links no next page.
+        let page = parse_listing(
+            include_str!("../tests/fixtures/trending_no_next_link.html"),
+            BASE_URL,
+        );
+        assert!(!page.sounds.is_empty());
+        assert!(
+            page.has_more,
+            "the next ?page= is asked until one comes back empty"
+        );
+        let past_the_end = parse_listing(
+            "<html><body><div id='instants_container'></div></body></html>",
+            BASE_URL,
+        );
+        assert!(!past_the_end.has_more);
+    }
+
+    #[test]
+    fn the_last_page_says_so() {
+        let html = r#"<div class="instant"><button class="small-button" onclick="play('/media/sounds/a.mp3', 'a')"></button><a class="instant-link" href="/en/instant/a/">A</a></div>
+            <p>Page title</p><span>Page 50 of 50</span>"#;
+        let last = parse_listing(html, BASE_URL);
+        assert_eq!(last.sounds.len(), 1);
+        assert!(!last.has_more, "page 50 of 50 has no successor");
+        let middle = parse_listing(&html.replace("Page 50 of 50", "Page 49 of 50"), BASE_URL);
+        assert!(middle.has_more);
     }
 
     #[test]
