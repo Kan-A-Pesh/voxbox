@@ -2,7 +2,9 @@ import { useId, useState } from "react";
 import type { Sound } from "../../ipc/contract";
 import { useVox } from "../../state/store";
 import { conflictFor, describeAction } from "../../lib/hotkeys";
-import { Field, Slider, Toggle } from "../../components/Controls";
+import { Field, Slider } from "../../components/Controls";
+import { VOICE_COLORS } from "../voices/VoiceEditor";
+import { ColorSwatches } from "../../components/ColorSwatches";
 import { SidePanel } from "../../components/SidePanel";
 import { HotkeyCapture } from "../../components/HotkeyCapture";
 
@@ -14,7 +16,8 @@ const formatDuration = (ms: number) => {
 export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }: {
   sound: Sound;
   categories: string[];
-  onSave: (s: Sound) => Promise<boolean>;
+  /** Saves only the fields this panel owns. */
+  onSave: (patch: Partial<Sound>) => Promise<boolean>;
   onDelete: () => void;
   onClose: () => void;
 }) {
@@ -24,7 +27,10 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const id = useId();
-  const dirty = JSON.stringify(draft) !== JSON.stringify(sound);
+  // The panel owns these fields; loop and favorite are toggled on the pad meanwhile,
+  // so they are always taken from the saved sound, never from this draft.
+  const owned = (s: Sound) => ({ name: s.name, category: s.category, volume: s.volume, color: s.color, hotkey: s.hotkey });
+  const dirty = JSON.stringify(owned(draft)) !== JSON.stringify(owned(sound));
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,7 +40,7 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
       return;
     }
     setSaving(true);
-    await onSave({ ...draft, name, category: draft.category?.trim() || null });
+    await onSave({ ...owned(draft), name, category: draft.category?.trim() || null });
     setSaving(false);
   }
 
@@ -79,12 +85,15 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
           format={(v) => `${Math.round(v * 100)} %`}
           onChange={(volume) => setDraft({ ...draft, volume })}
         />
-        <Toggle
-          label="Lecture en boucle"
-          hint="Rejoue le son jusqu'à ce que tu l'arrêtes."
-          checked={draft.loop}
-          onChange={(loop) => setDraft({ ...draft, loop })}
-        />
+        <div className="field">
+          <span className="label">Couleur</span>
+          <ColorSwatches
+            label="Couleur du son"
+            options={[null, ...VOICE_COLORS]}
+            value={draft.color}
+            onChange={(color) => setDraft({ ...draft, color })}
+          />
+        </div>
         <div className="field">
           <span className="label" id={`${id}-hk`}>Raccourci</span>
           <HotkeyCapture
@@ -107,7 +116,7 @@ export function SoundEditPanel({ sound, categories, onSave, onDelete, onClose }:
           <button type="submit" className="btn btn--primary" disabled={!dirty || saving}>
             {saving ? "Enregistrement…" : "Enregistrer"}
           </button>
-          <button type="button" className="btn btn--ghost" disabled={!dirty || saving} onClick={() => setDraft(sound)}>
+          <button type="button" className="btn btn--ghost" disabled={!dirty || saving} onClick={() => setDraft({ ...draft, ...owned(sound) })}>
             Annuler
           </button>
         </div>

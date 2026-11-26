@@ -97,7 +97,7 @@ describe("voice selection", () => {
 });
 
 describe("sound edit flow", () => {
-  it("renames, loops and binds a hotkey, then saves through update_sound + set_hotkey", async () => {
+  it("renames, colors and binds a hotkey, then saves through update_sound + set_hotkey", async () => {
     const user = userEvent.setup();
     const { callsOf } = renderApp("sounds");
     await user.click(await screen.findByRole("button", { name: "Modifier Oof" }));
@@ -105,7 +105,8 @@ describe("sound edit flow", () => {
     const name = within(panel).getByLabelText("Nom");
     await user.clear(name);
     await user.type(name, "Oof Roblox");
-    await user.click(within(panel).getByRole("switch", { name: /Lecture en boucle/ }));
+    expect(within(panel).queryByRole("switch", { name: /Lecture en boucle/ })).toBeNull();
+    await user.click(within(panel).getByRole("radio", { name: "#ff9f1c" }));
     const capture = within(panel).getByRole("button", { name: /Raccourci pour Oof/ });
     await user.click(capture);
     fireEvent.keyDown(capture, { code: "KeyO", key: "o", ctrlKey: true, altKey: true });
@@ -114,12 +115,29 @@ describe("sound edit flow", () => {
 
     await waitFor(() => expect(callsOf("update_sound")).toHaveLength(1));
     expect(callsOf("update_sound")[0]?.args).toMatchObject({
-      sound: { id: "snd-oof", name: "Oof Roblox", loop: true, hotkey: "Ctrl+Alt+O" },
+      sound: { id: "snd-oof", name: "Oof Roblox", color: "#ff9f1c", hotkey: "Ctrl+Alt+O" },
     });
     await waitFor(() =>
       expect(callsOf("set_hotkey")[0]?.args).toEqual({ action: { type: "sound", id: "snd-oof" }, accelerator: "Ctrl+Alt+O" }),
     );
     expect(await screen.findByRole("button", { name: "Jouer Oof Roblox" })).toHaveTextContent("Ctrl+Alt+O");
+  });
+
+  it("loops a sound in one click from the bank, and lists favorites first", async () => {
+    const user = userEvent.setup();
+    const { callsOf } = renderApp("sounds");
+    await user.click(await screen.findByRole("button", { name: "Jouer Oof en boucle" }));
+    await waitFor(() => expect(callsOf("update_sound")[0]?.args).toMatchObject({ sound: { id: "snd-oof", loop: true } }));
+    expect(await screen.findByRole("button", { name: "Ne plus jouer Oof en boucle" })).toHaveAttribute("aria-pressed", "true");
+
+    const pads = () => screen.getAllByRole("button", { name: /^(Jouer|Arrêter) (?!.* en boucle$)/ }).map((b) => b.getAttribute("aria-label"));
+    const before = pads();
+    const last = before[before.length - 1]!.replace(/^Jouer /, "");
+    await user.click(screen.getByRole("button", { name: `Ajouter ${last} aux favoris` }));
+    // It joins the favorites at the top (after those already starred).
+    await waitFor(() => expect(pads().indexOf(`Jouer ${last}`)).toBeLessThan(before.length - 1));
+    const favoriteCount = screen.getAllByRole("button", { name: /^Retirer .* des favoris$/ }).length;
+    expect(pads().indexOf(`Jouer ${last}`)).toBeLessThan(favoriteCount);
   });
 
   it("moves a hotkey to another sound, and favouriting the former owner does not steal it back", async () => {
@@ -173,9 +191,9 @@ describe("sound edit flow", () => {
     const stopAll = await screen.findByRole("button", { name: "Tout arrêter" });
     expect(stopAll).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Jouer Oof" }));
-    expect(callsOf("play_sound")[0]?.args).toEqual({ id: "snd-oof" });
+    expect(callsOf("play_sound")[0]?.args).toMatchObject({ id: "snd-oof" });
     await user.click(await screen.findByRole("button", { name: "Arrêter Oof" }));
-    expect(callsOf("stop_sound")[0]?.args).toEqual({ id: "snd-oof" });
+    expect(callsOf("stop_sound")[0]?.args).toMatchObject({ id: "snd-oof" });
     await user.click(await screen.findByRole("button", { name: "Jouer Bruh" }));
     await waitFor(() => expect(stopAll).toBeEnabled());
     await user.click(stopAll);
@@ -227,13 +245,13 @@ describe("MyInstants explorer", () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime, delay: 50 });
     const { callsOf } = renderApp("sounds");
     await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
-    await screen.findByRole("button", { name: "Écouter Vine boom" });
+    await screen.findByRole("button", { name: "Jouer Vine boom" });
     await user.type(screen.getByRole("searchbox", { name: "Rechercher sur MyInstants" }), "bruh");
     expect(callsOf("myinstants_search")).toHaveLength(0);
     await act(() => vi.advanceTimersByTimeAsync(SEARCH_DEBOUNCE_MS + 10));
     expect(callsOf("myinstants_search")).toEqual([{ cmd: "myinstants_search", args: { query: "bruh", page: 1 } }]);
-    expect(await screen.findByRole("button", { name: "Écouter Bruh" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Écouter Vine boom" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Jouer Bruh" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Jouer Vine boom" })).not.toBeInTheDocument();
   });
 
   it("shows a recoverable error when MyInstants is unreachable", async () => {
@@ -269,8 +287,8 @@ describe("MyInstants explorer", () => {
         ? invoke("myinstants_trending", { page: source(args.page) }).then((p) => ({ ...p, hasMore: true }))
         : invoke(cmd as never, args as never)) as typeof backend.invoke);
     await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
-    const count = () => screen.getAllByRole("button", { name: /^Écouter / }).length;
-    const first = (await screen.findAllByRole("button", { name: /^Écouter / })).length;
+    const count = () => screen.getAllByRole("button", { name: /^Jouer / }).length;
+    const first = (await screen.findAllByRole("button", { name: /^Jouer / })).length;
     const loadPage = async (page: number) => {
       await scrollToEnd();
       await waitFor(() => expect(callsOf("myinstants_trending")).toHaveLength(page));
@@ -318,7 +336,7 @@ describe("MyInstants explorer", () => {
     const user = userEvent.setup();
     const { callsOf } = renderApp("sounds");
     await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
-    const tile = (await screen.findByRole("button", { name: "Écouter Tuturu" })).closest("li") as HTMLElement;
+    const tile = (await screen.findByRole("button", { name: "Jouer Tuturu" })).closest("li") as HTMLElement;
     await user.click(within(tile).getByRole("button", { name: /Ajouter/ }));
     await user.selectOptions(within(tile).getByLabelText("Catégorie"), "Mèmes");
     await user.click(within(tile).getByRole("button", { name: "Ajouter" }));

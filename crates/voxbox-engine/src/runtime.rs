@@ -295,10 +295,13 @@ impl Runtime {
         status.latency_ms += self.settings.latency_ms.load(Ordering::Relaxed);
         status
     }
-    pub fn command(&self, command: Command) {
-        if self.sender.send(Message::Audio(command)).is_err() {
+    /// False when the engine has stopped and refused the command.
+    pub fn command(&self, command: Command) -> bool {
+        let sent = self.sender.send(Message::Audio(command)).is_ok();
+        if !sent {
             tracing::error!("Le moteur audio est arrêté ; la commande a été refusée");
         }
+        sent
     }
     pub fn voice(&self, effects: &[EffectSpec], ai: Option<RvcStream>) {
         self.command(Command::Voice(Voice::new(effects, ai)));

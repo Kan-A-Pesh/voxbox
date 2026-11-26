@@ -19,12 +19,12 @@ const COVERED: Record<keyof Commands, true> = {
   delete_voice: true, preview_effects: true, import_sounds: true, update_sound: true, delete_sound: true,
   play_sound: true, stop_sound: true, stop_all_sounds: true, myinstants_trending: true, myinstants_search: true,
   myinstants_add: true, set_hotkey: true, import_ai_model: true, delete_ai_model: true, open_logs_folder: true,
-  log_client_error: true,
+  log_client_error: true, myinstants_play: true, set_voice_favorite: true, begin_page: true,
 };
 
 describe("mock backend honours the IPC contract", () => {
   it("covers every command", () => {
-    expect(Object.keys(COVERED)).toHaveLength(21);
+    expect(Object.keys(COVERED)).toHaveLength(24);
   });
 
   it("returns a complete snapshot with the 22 real presets, the 2 bundled AI voices and ~16 sounds", async () => {
@@ -94,17 +94,32 @@ describe("mock backend honours the IPC contract", () => {
     await expect(b.invoke("import_sounds", { paths: ["C:\\a\\doc.pdf"] })).rejects.toThrow(/Format/);
     const first = added[0];
     if (!first) throw new Error("no sound");
+    // Colors follow the Rust store's rule: trimmed, #rrggbb, lowercased; anything else is none.
+    const padded = await b.invoke("update_sound", { sound: { ...first, color: " #FF9F1C " } });
+    expect(padded.color).toBe("#ff9f1c");
+    const invalid = await b.invoke("update_sound", { sound: { ...first, color: "red" } });
+    expect(invalid.color).toBeNull();
     const updated = await b.invoke("update_sound", { sound: { ...first, volume: 3, hotkey: "F13" } });
     expect(updated.volume).toBe(1);
     expect(updated.hotkey).toBeNull();
     await b.invoke("set_hotkey", { action: { type: "sound", id: first.id }, accelerator: "F13" });
     expect((await b.invoke("get_snapshot", {})).hotkeys).toContainEqual({ action: { type: "sound", id: first.id }, accelerator: "F13" });
-    await b.invoke("play_sound", { id: first.id });
+    const { page } = await b.invoke("begin_page", {});
+    await b.invoke("play_sound", { id: first.id, page, stops: 0 });
     expect(events).toContainEqual(expect.objectContaining({ type: "soundProgress", id: first.id, positionMs: 0 }));
-    await b.invoke("stop_sound", { id: first.id });
+    await b.invoke("stop_sound", { id: first.id, page });
     expect(events).toContainEqual({ type: "soundEnded", id: first.id });
-    await b.invoke("play_sound", { id: first.id });
-    await b.invoke("stop_all_sounds", {});
+    await b.invoke("play_sound", { id: first.id, page, stops: 0 });
+    await b.invoke("stop_all_sounds", { page });
+    expect(events.filter((e) => e.type === "soundEnded")).toHaveLength(2);
+    // After a reload, the old page's late commands are ignored, and a late
+    // begin_page of the old page neither stops the new page's sounds nor moves the number.
+    b.simulatePageLoad();
+    const reloaded = (await b.invoke("begin_page", {})).page;
+    expect(reloaded).toBe(page + 1);
+    await b.invoke("play_sound", { id: first.id, page: reloaded, stops: 0 });
+    await b.invoke("stop_all_sounds", { page });
+    expect((await b.invoke("begin_page", {})).page).toBe(reloaded);
     expect(events.filter((e) => e.type === "soundEnded")).toHaveLength(2);
     await b.invoke("delete_sound", { id: first.id });
     expect((await b.invoke("get_snapshot", {})).sounds.some((s) => s.id === first.id)).toBe(false);

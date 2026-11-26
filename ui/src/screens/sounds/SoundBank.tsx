@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import type { Sound } from "../../ipc/contract";
+import { useMemo, useState, type CSSProperties } from "react";
+import type { HotkeyBinding, Sound } from "../../ipc/contract";
 import { useVox } from "../../state/store";
 import { onGridKeyDown } from "../../lib/gridNav";
 import { fold } from "../../lib/text";
@@ -9,18 +9,40 @@ import { Chips, EmptyState, IconButton } from "../../components/Controls";
 import { SoundEditPanel } from "./SoundEditPanel";
 import type { Progress } from "./useSoundProgress";
 
+type SoundWrites = {
+  /** The last write queued for this sound. */
+  chain: Promise<boolean>;
+  /** The record as last saved by the app. */
+  confirmed: Sound;
+  /** Changes not saved yet, oldest first, shown over `confirmed`. */
+  pending: { patch: Partial<Sound> }[];
+};
+
+const soundWrites = new WeakMap<object, Map<string, SoundWrites>>();
+function writesOf(backend: object): Map<string, SoundWrites> {
+  let writes = soundWrites.get(backend);
+  if (!writes) {
+    writes = new Map();
+    soundWrites.set(backend, writes);
+  }
+  return writes;
+}
+
 const ALL = "__all";
 const FAV = "__fav";
 const NONE = "__none";
 
-export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }: {
+export function SoundBank({ query, onClearQuery, progress, onStarting, onRefused, onImport, onExplore }: {
   query: string;
   onClearQuery: () => void;
   progress: Progress;
+  /** A play was accepted (it may still be decoding). */
+  onStarting: (id: string) => void;
+  onRefused: (id: string) => void;
   onImport: () => void;
   onExplore: () => void;
 }) {
-  const { snapshot, setSnapshot, call } = useVox();
+  const { backend, snapshot, setSnapshot, call, soundCall } = useVox();
   const { sounds } = snapshot;
   const [filter, setFilter] = useState(ALL);
   const [editing, setEditing] = useState<string | null>(null);
@@ -39,35 +61,64 @@ export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }
   const activeFilter = filterOptions.some((o) => o.value === filter) ? filter : ALL;
 
   const q = fold(query.trim());
-  const visible = sounds.filter(
+  const matching = sounds.filter(
     (s) =>
       (activeFilter === ALL ? true : activeFilter === FAV ? s.favorite : activeFilter === NONE ? !s.category : s.category === activeFilter) &&
       (!q || fold(s.name).includes(q)),
   );
+  // In "Tous", favorites come first, each group in its usual order (sort is stable).
+  const visible = activeFilter === ALL ? [...matching].sort((a, b) => Number(b.favorite) - Number(a.favorite)) : matching;
 
   async function toggle(s: Sound) {
-    if (progress[s.id]) await call("stop_sound", { id: s.id });
-    else await call("play_sound", { id: s.id });
+    // A sound still decoding counts as playing: a second click stops it.
+    if (progress[s.id]) {
+      await soundCall((b, page) => b.invoke("stop_sound", { id: s.id, page }));
+      return;
+    }
+    onStarting(s.id);
+    const accepted = await soundCall((b, page, stops) => b.invoke("play_sound", { id: s.id, page, stops }).then(() => true));
+    if (!accepted) onRefused(s.id);
   }
 
-  async function saveSound(next: Sound) {
-    const prev = sounds.find((s) => s.id === next.id);
-    setSnapshot((snap) => ({ ...snap, sounds: snap.sounds.map((x) => (x.id === next.id ? next : x)) }));
-    const saved = await call("update_sound", { sound: next });
-    if (!saved) {
-      if (prev) setSnapshot((snap) => ({ ...snap, sounds: snap.sounds.map((x) => (x.id === next.id ? prev : x)) }));
-      return false;
+  // Writes to one sound run one after the other, each sending only its own fields on top
+  // of the last saved record: a loop toggled on the pad while the editor saves is kept,
+  // and an older answer never hides a newer change still on its way.
+  // The queues outlive this view (switching tabs remounts it), one set per app.
+  function saveSound(id: string, patch: Partial<Sound>): Promise<boolean> {
+    const current = sounds.find((s) => s.id === id);
+    if (!current) return Promise.resolve(false);
+    const writes = writesOf(backend);
+    let w = writes.get(id);
+    if (!w) {
+      w = { chain: Promise.resolve(true), confirmed: current, pending: [] };
+      writes.set(id, w);
     }
-    let hotkeys = snapshot.hotkeys;
-    if (prev?.hotkey !== next.hotkey) {
-      hotkeys = (await call("set_hotkey", { action: { type: "sound", id: next.id }, accelerator: next.hotkey })) ?? hotkeys;
-    }
-    setSnapshot((snap) => ({
-      ...snap,
-      hotkeys,
-      sounds: reconcileSoundHotkeys(snap.sounds.map((x) => (x.id === saved.id ? saved : x)), hotkeys),
-    }));
-    return true;
+    const state = w;
+    const entry = { patch };
+    state.pending.push(entry);
+    const shown = (): Sound => Object.assign({}, state.confirmed, ...state.pending.map((p) => p.patch));
+    setSnapshot((snap) => ({ ...snap, sounds: snap.sounds.map((x) => (x.id === id ? shown() : x)) }));
+    const run = state.chain.then(async () => {
+      const before = state.confirmed;
+      const saved = await call("update_sound", { sound: { ...before, ...patch } });
+      if (saved) state.confirmed = saved;
+      let hotkeys: HotkeyBinding[] | undefined;
+      // update_sound leaves the shortcut alone: it has its own command.
+      if (saved && patch.hotkey !== undefined && patch.hotkey !== before.hotkey) {
+        hotkeys = await call("set_hotkey", { action: { type: "sound", id }, accelerator: patch.hotkey });
+        if (hotkeys) state.confirmed = { ...state.confirmed, hotkey: patch.hotkey };
+      }
+      state.pending = state.pending.filter((p) => p !== entry);
+      if (state.pending.length === 0 && writes.get(id) === state) writes.delete(id);
+      setSnapshot((snap) => {
+        const keys = hotkeys ?? snap.hotkeys;
+        const next = snap.sounds.map((x) => (x.id === id ? shown() : x));
+        return { ...snap, hotkeys: keys, sounds: hotkeys ? reconcileSoundHotkeys(next, keys) : next };
+      });
+      return !!saved;
+    });
+    state.chain = run;
+    return run;
   }
 
   async function deleteSound(id: string) {
@@ -122,7 +173,8 @@ export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }
                 progress={progress}
                 editing={s.id === editing}
                 onToggle={() => toggle(s)}
-                onFavorite={() => saveSound({ ...s, favorite: !s.favorite })}
+                onFavorite={() => void saveSound(s.id, { favorite: !s.favorite })}
+                onLoop={() => void saveSound(s.id, { loop: !s.loop })}
                 onEdit={() => setEditing(s.id === editing ? null : s.id)}
               />
             ))}
@@ -135,7 +187,7 @@ export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }
           key={editedSound.id}
           sound={editedSound}
           categories={categories}
-          onSave={saveSound}
+          onSave={(patch) => saveSound(editedSound.id, patch)}
           onDelete={() => deleteSound(editedSound.id)}
           onClose={() => setEditing(null)}
         />
@@ -144,18 +196,22 @@ export function SoundBank({ query, onClearQuery, progress, onImport, onExplore }
   );
 }
 
-function Pad({ sound, progress, editing, onToggle, onFavorite, onEdit }: {
+function Pad({ sound, progress, editing, onToggle, onFavorite, onLoop, onEdit }: {
   sound: Sound;
   progress: Progress;
   editing: boolean;
   onToggle: () => void;
   onFavorite: () => void;
+  onLoop: () => void;
   onEdit: () => void;
 }) {
   const p = progress[sound.id];
   const ratio = p && p.durationMs > 0 ? p.positionMs / p.durationMs : 0;
   return (
-    <li className={`pad${p ? " is-playing" : ""}${editing ? " is-editing" : ""}${sound.favorite ? " is-favorite" : ""}`}>
+    <li
+      className={`pad${p ? " is-playing" : ""}${editing ? " is-editing" : ""}${sound.favorite ? " is-favorite" : ""}${sound.color ? " has-color" : ""}`}
+      style={sound.color ? ({ "--pad-color": sound.color } as CSSProperties) : undefined}
+    >
       <button
         type="button"
         data-grid-item
@@ -176,9 +232,10 @@ function Pad({ sound, progress, editing, onToggle, onFavorite, onEdit }: {
             {sound.hotkey ? <kbd>{sound.hotkey}</kbd> : null}
             {sound.loop ? (
               <span className="pad__loop" title="Lecture en boucle">
-                <PixelIcon name="loop" scale={1} /> boucle
+                <PixelIcon name="loop" scale={1} />
               </span>
             ) : null}
+
           </span>
         </span>
       </button>
@@ -190,6 +247,13 @@ function Pad({ sound, progress, editing, onToggle, onFavorite, onEdit }: {
           pressed={sound.favorite}
           tone="accent"
           onClick={onFavorite}
+        />
+        <IconButton
+          icon="loop"
+          size={1}
+          label={sound.loop ? `Ne plus jouer ${sound.name} en boucle` : `Jouer ${sound.name} en boucle`}
+          pressed={sound.loop}
+          onClick={onLoop}
         />
         <IconButton icon="pencil" size={1} label={`Modifier ${sound.name}`} pressed={editing} onClick={onEdit} />
       </div>

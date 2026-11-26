@@ -65,6 +65,32 @@ pub fn update_settings(
     Ok(settings)
 }
 
+/// Adds or removes one favorite voice (in the saved list, whatever else changed it).
+#[tauri::command]
+pub fn set_voice_favorite(
+    state: State<'_, AppState>,
+    id: String,
+    favorite: bool,
+) -> AppResult<AppSettings> {
+    crate::store::commit_and_publish(
+        &state.store,
+        |next| {
+            let mut ids = next.favorite_voice_ids.clone();
+            ids.retain(|x| *x != id);
+            if favorite {
+                ids.push(id);
+            }
+            next.apply(crate::store::SettingsPatch {
+                favorite_voice_ids: Some(ids),
+                ..Default::default()
+            });
+        },
+        None,
+        |_| Ok::<(), AppError>(()),
+        |s| state.publish_flags(s),
+    )
+}
+
 #[tauri::command(async)]
 pub fn set_active_voice(state: State<'_, AppState>, id: String) -> AppResult<AppSettings> {
     let ai_models = state.ai_models();
@@ -159,6 +185,7 @@ fn import_file(
             duration_ms: decoded.duration_ms,
             source,
             source_url,
+            color: None,
         },
         file,
     };
@@ -207,19 +234,53 @@ pub fn delete_sound(state: State<'_, AppState>, id: String) -> AppResult<()> {
     Ok(())
 }
 
-#[tauri::command(async)]
-pub fn play_sound(state: State<'_, AppState>, id: String) -> AppResult<()> {
-    state.play_sound(&id)
+// Sound commands: the UI sends them one at a time, each after the previous one
+// answered (ui/src/lib/soundCommands.ts), so they run in click order. They answer at
+// once: downloads and decoding run on their own threads afterwards (see
+// `PlaybackGate`). Each carries the page that sent it: after a reload, a command of
+// the old page arriving late is ignored.
+
+/// What a page needs before its first sound command.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SoundPage {
+    /// The page loaded now (see `AppState::start_page`).
+    pub page: u64,
+    /// See `AppState::hotkey_stops`.
+    pub hotkey_stops: u64,
 }
 
-#[tauri::command(async)]
-pub fn stop_sound(state: State<'_, AppState>, id: String) {
-    state.engine.stop_sound(&id);
+/// A request of a page since replaced only gets an answer nobody reads.
+#[tauri::command]
+pub fn begin_page(state: State<'_, AppState>) -> SoundPage {
+    SoundPage {
+        page: state.current_page(),
+        hotkey_stops: state.hotkey_stops(),
+    }
 }
 
-#[tauri::command(async)]
-pub fn stop_all_sounds(state: State<'_, AppState>) {
-    state.engine.stop_all_sounds();
+/// Plays a sound of the bank (once decoded; a failure arrives as `sound-failed`).
+/// `stops`: the shortcut's stop count the UI knew when the play was clicked.
+#[tauri::command]
+pub fn play_sound(state: State<'_, AppState>, id: String, page: u64, stops: u64) -> AppResult<()> {
+    if !state.is_current_page(page) {
+        return Ok(());
+    }
+    state.play_sound(&id, Some(stops))
+}
+
+#[tauri::command]
+pub fn stop_sound(state: State<'_, AppState>, id: String, page: u64) {
+    if state.is_current_page(page) {
+        state.stop_sound(&id);
+    }
+}
+
+#[tauri::command]
+pub fn stop_all_sounds(state: State<'_, AppState>, page: u64) {
+    if state.is_current_page(page) {
+        state.stop_all_sounds();
+    }
 }
 
 /// MyInstants uses `reqwest::blocking`, which must not run inside an async task
@@ -252,6 +313,30 @@ pub async fn myinstants_search(query: String, page: u32) -> AppResult<SearchPage
     .await
 }
 
+/// Plays a MyInstants sound without adding it: to everyone, or in the headset
+/// only when `preview`. Returns the playback id at once (stop it with
+/// `stop_sound`); the sound starts once downloaded, and a failure arrives as
+/// `sound-failed`. `replace` (a playback switching mode) is stopped first.
+#[tauri::command]
+pub fn myinstants_play(
+    state: State<'_, AppState>,
+    sound: RemoteSound,
+    preview: bool,
+    replace: Option<String>,
+    page: u64,
+    stops: u64,
+) -> AppResult<String> {
+    if !state.is_current_page(page) {
+        return Err(AppError::Other(String::from(
+            "page rechargée : relance le son",
+        )));
+    }
+    if let Some(id) = replace {
+        state.stop_sound(&id);
+    }
+    Ok(state.play_remote(&sound, preview, stops))
+}
+
 #[tauri::command]
 pub async fn myinstants_add(
     app: AppHandle,
@@ -260,18 +345,15 @@ pub async fn myinstants_add(
 ) -> AppResult<Sound> {
     blocking(move || {
         let state = app.state::<AppState>();
-        let tmp = tempdir_in(&state.store.lock().sounds_dir())?;
-        let downloaded = voxbox_myinstants::Client::new().download(&sound, &tmp);
-        let result = downloaded.map_err(AppError::from).and_then(|path| {
+        let result = state.with_myinstants_file(&sound, |path| {
             import_file(
                 &state,
-                &path,
+                path,
                 sound.title.trim().to_string(),
                 SoundSource::Myinstants,
                 Some(sound.page_url.clone()),
             )
         });
-        let _ = fs::remove_dir_all(&tmp);
         let mut added = result?;
         if category.as_deref().is_some_and(|c| !c.trim().is_empty()) {
             added.category = category;
@@ -280,13 +362,6 @@ pub async fn myinstants_add(
         Ok(added)
     })
     .await
-}
-
-fn tempdir_in(parent: &Path) -> AppResult<PathBuf> {
-    let dir = parent.join(format!(".download-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&dir)
-        .map_err(|e| AppError::Other(format!("dossier temporaire impossible : {e}")))?;
-    Ok(dir)
 }
 
 #[tauri::command(async)]

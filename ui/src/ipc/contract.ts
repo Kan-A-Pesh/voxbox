@@ -116,6 +116,8 @@ export interface Sound {
   durationMs: number;
   source: "local" | "myinstants";
   sourceUrl: string | null;
+  /** `#rrggbb` picked by the user, or null for the bank's default look. */
+  color: string | null;
 }
 
 export type HotkeyAction =
@@ -142,6 +144,8 @@ export interface AppSettings {
   soundMonitorVolume: number;
   aiParams: RvcParams;
   startMinimized: boolean;
+  /** Starred voices (any kind), listed first. */
+  favoriteVoiceIds: string[];
 }
 
 export interface Snapshot {
@@ -161,6 +165,11 @@ export interface Commands {
   list_devices: [Record<string, never>, Devices];
   update_settings: [{ patch: Partial<AppSettings> }, AppSettings];
   set_active_voice: [{ id: string }, AppSettings];
+  /** Adds or removes one favorite voice in the saved list. */
+  set_voice_favorite: [{ id: string; favorite: boolean }, AppSettings];
+  /** This page's number for the sound commands (the app moves to a new number, and stops the sounds, on every page load),
+   * and the "stop all" shortcut's count so far. */
+  begin_page: [Record<string, never>, { page: number; hotkeyStops: number }];
   /** Creates (empty/unknown id) or updates a custom voice. */
   save_voice: [{ voice: VoicePreset }, VoicePreset];
   delete_voice: [{ id: string }, null];
@@ -170,12 +179,22 @@ export interface Commands {
   /** Saves name/category/favorite/volume/loop. `hotkey` is ignored: use set_hotkey. */
   update_sound: [{ sound: Sound }, Sound];
   delete_sound: [{ id: string }, null];
-  play_sound: [{ id: string }, null];
-  stop_sound: [{ id: string }, null];
-  stop_all_sounds: [Record<string, never>, null];
+  // Sound commands: sent one at a time with this page's number (see lib/soundCommands.ts).
+  /** Starts once decoded; a failure arrives as `sound-failed`. */
+  /** `stops`: how many times the "stop all" shortcut had run when it was clicked (see `sounds-stopped`). */
+  play_sound: [{ id: string; page: number; stops: number }, null];
+  stop_sound: [{ id: string; page: number }, null];
+  stop_all_sounds: [{ page: number }, null];
   myinstants_trending: [{ page: number }, SearchPage];
   myinstants_search: [{ query: string; page: number }, SearchPage];
   myinstants_add: [{ sound: RemoteSound; category: string | null }, Sound];
+  /**
+   * Plays a MyInstants sound without adding it: to everyone (mic + headset), or in the
+   * headset only when `preview`. Returns the playback id at once (stop_sound,
+   * soundProgress/Ended); the sound starts once downloaded, a failure arrives as
+   * `sound-failed`. `replace`: a playback of this screen to stop first (switching mode).
+   */
+  myinstants_play: [{ sound: RemoteSound; preview: boolean; replace?: string | null; page: number; stops: number }, string];
   /** accelerator null removes the binding. Returns all bindings. */
   set_hotkey: [{ action: HotkeyAction; accelerator: string | null }, HotkeyBinding[]];
   /** Emits "ai-import-progress" { progress: 0..1 } while converting. Also creates the AI voice. */
@@ -193,4 +212,8 @@ export interface Events {
   /** Pushed whenever state changes outside the UI (hotkeys, tray, device loss). */
   "snapshot-changed": Snapshot;
   "ai-import-progress": { progress: number };
+  /** A play the app accepted could not start (download or decoding failed); its `soundEnded` is sent too. */
+  "sound-failed": { id: string; message: string };
+  /** The "stop all" shortcut ran: how many times so far. A play clicked before it is refused (it just ends). */
+  "sounds-stopped": number;
 }

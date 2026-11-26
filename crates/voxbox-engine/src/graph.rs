@@ -81,6 +81,8 @@ pub struct Sound {
     volume: f32,
     looped: bool,
     ended: bool,
+    /// False for a preview: heard in the headset only, never sent to the mic.
+    to_mic: bool,
 }
 pub enum Command {
     Voice(Box<Voice>),
@@ -90,14 +92,24 @@ pub enum Command {
 }
 impl Command {
     pub fn play(id: &str, data: DecodedSound, volume: f32, looped: bool) -> Self {
-        Self::Play(Some(Sound {
+        Self::Play(Some(Sound::new(id, data, volume, looped, true)))
+    }
+    /// Plays in the headset only: the others do not hear it.
+    pub fn preview(id: &str, data: DecodedSound, volume: f32) -> Self {
+        Self::Play(Some(Sound::new(id, data, volume, false, false)))
+    }
+}
+impl Sound {
+    fn new(id: &str, data: DecodedSound, volume: f32, looped: bool, to_mic: bool) -> Self {
+        Self {
             id: id.into(),
             data,
             position: 0,
             volume: level(volume),
             looped,
             ended: false,
-        }))
+            to_mic,
+        }
     }
 }
 /// Events retain an Arc owned by a live/retired sound. Formatting happens off-thread.
@@ -342,7 +354,9 @@ impl Graph {
                     }
                 }
                 let sample = sound.data.samples[sound.position] * sound.volume;
-                cable[i] += sample * cable_level;
+                if sound.to_mic {
+                    cable[i] += sample * cable_level;
+                }
                 monitor[i] += sample * monitor_level;
                 sound.position += 1;
             }

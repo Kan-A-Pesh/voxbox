@@ -15,13 +15,14 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 export function SoundsScreen() {
-  const { call } = useVox();
+  const { soundCall } = useVox();
   const [tab, setTab] = useState<Tab>("bank");
   const [bankQuery, setBankQuery] = useState("");
   const [remoteQuery, setRemoteQuery] = useState("");
-  const progress = useSoundProgress();
+  const { progress, markStarting, forget } = useSoundProgress();
   const { dragging, pickAndImport } = useSoundImport();
-  const playing = Object.keys(progress).length;
+  const [remotePending, setRemotePending] = useState(0);
+  const playing = Object.keys(progress).length + (tab === "explore" ? remotePending : 0);
 
   return (
     <section className="page page--split" aria-labelledby="sounds-title">
@@ -57,7 +58,7 @@ export function SoundsScreen() {
           <SearchField label="Rechercher sur MyInstants" placeholder="Rechercher" value={remoteQuery} onChange={setRemoteQuery} />
         )}
         <div className="page__actions">
-          <button type="button" className="btn" onClick={() => call("stop_all_sounds", {})} disabled={playing === 0}>
+          <button type="button" className="btn" onClick={() => soundCall((b, page) => b.invoke("stop_all_sounds", { page }))} disabled={playing === 0}>
             <PixelIcon name="stop" scale={1} /> Tout arrêter
           </button>
           <button
@@ -76,11 +77,13 @@ export function SoundsScreen() {
             query={bankQuery}
             onClearQuery={() => setBankQuery("")}
             progress={progress}
+            onStarting={markStarting}
+            onRefused={forget}
             onImport={pickAndImport}
             onExplore={() => setTab("explore")}
           />
         ) : (
-          <Explorer query={remoteQuery} onClearQuery={() => setRemoteQuery("")} />
+          <Explorer query={remoteQuery} onClearQuery={() => setRemoteQuery("")} onPendingChange={setRemotePending} />
         )}
       </div>
       {dragging ? (

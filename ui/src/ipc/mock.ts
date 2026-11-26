@@ -20,6 +20,8 @@ export interface MockOptions {
   meters?: boolean;
   /** Speed of the AI import simulation (ms per progress step). */
   aiImportStepMs?: number;
+  /** How long a MyInstants play "downloads" before it starts (0: at once). */
+  remoteDownloadMs?: number;
   /** Saved devices point to a USB headset that is no longer plugged in. */
   unpluggedHeadset?: boolean;
   /** A newer release is published (null: this version is the latest). */
@@ -56,6 +58,14 @@ export interface MockBackend extends Backend {
   simulateDragEvent(e: FileDropEvent): void;
   /** Test hook: the engine stops after a device disappears (only an `engine` event, like the Rust runtime). */
   simulateDeviceLoss(message: string): void;
+  /** Test hook: the "stop all" global shortcut (it stops everything and sends `sounds-stopped`). */
+  simulateHotkeyStopAll(): void;
+  /** Test hook: the webview loads a page again (a reload): the sounds stop, the page number moves on. */
+  simulatePageLoad(): void;
+  /** Test hook: the engine stopped a playback (only an `engine` event). */
+  simulateSoundEnded(id: string): void;
+  /** Test hook: an accepted play could not start (its end, then `sound-failed`, like the app). */
+  simulateSoundFailed(id: string, message: string): void;
   /** Test hook: the engine restarted on its own (only an `engine` event). */
   simulateRecovery(): void;
   /** Test hook: a retry found a more precise reason (quiet `statusChanged` event). */
@@ -105,7 +115,7 @@ function baseName(path: string) {
 }
 
 export function createMockBackend(options: MockOptions = {}): MockBackend {
-  const { latencyMs = 0, meters = true, aiImportStepMs = 120 } = options;
+  const { latencyMs = 0, meters = true, aiImportStepMs = 120, remoteDownloadMs = 0 } = options;
   let published: MockUpdate | null = options.update ?? null;
   let checks = 0;
   let inFlight = 0;
@@ -114,6 +124,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
   let checkGate: Promise<void> | null = null;
   let installGate: Promise<void> | null = null;
   let hasRestarted = false;
+  let remotePlays = 0;
   const cableFound = !options.cableMissing;
 
   const state: Snapshot = {
@@ -148,6 +159,11 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
   const calls: MockBackend["calls"] = [];
   let previewing = false;
   let importCounter = 0;
+  // MyInstants plays accepted but still "downloading" (see `PlaybackGate` in src-tauri/src/state.rs).
+  const downloading = new Map<string, ReturnType<typeof setTimeout>>();
+  // Like the app: the number of the page loaded now (bumped on every page load).
+  let page = 1;
+  let hotkeyStops = 0;
 
   function emit<E extends EventName>(event: E, payload: Events[E]) {
     listeners.get(event)?.forEach((h) => (h as (p: Events[E]) => void)(clone(payload)));
@@ -165,6 +181,15 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
     timers.add(id);
   }
 
+  /** A play still downloading never starts; like the app, the UI hears it ended. */
+  function cancelDownload(id: string) {
+    const timer = downloading.get(id);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    downloading.delete(id);
+    emit("engine", { type: "soundEnded", id });
+  }
+
   function stop(id: string) {
     const timer = playing.get(id);
     if (timer !== undefined) {
@@ -177,6 +202,10 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
   function play(id: string) {
     const sound = state.sounds.find((x) => x.id === id);
     if (!sound) throw new Error(`Son introuvable : ${id}`);
+    playFor(id, sound);
+  }
+
+  function playFor(id: string, sound: { durationMs: number; loop: boolean }) {
     stop(id);
     let pos = 0;
     const step = 100;
@@ -239,6 +268,12 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       state.settings.aiParams = clampRvcParams(state.settings.aiParams);
       return state.settings;
     },
+    set_voice_favorite: ({ id, favorite }) => {
+      const ids = state.settings.favoriteVoiceIds.filter((x) => x !== id);
+      state.settings.favoriteVoiceIds = favorite ? [...ids, id] : ids;
+      return state.settings;
+    },
+    begin_page: () => ({ page, hotkeyStops }),
     set_active_voice: ({ id }) => {
       if (!state.voices.some((v) => v.id === id)) throw new Error(`Voix introuvable : ${id}`);
       state.settings.activeVoiceId = id;
@@ -286,6 +321,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
         durationMs: 1500 + ((importCounter * 1337) % 6000),
         source: "local",
         sourceUrl: null,
+        color: null,
       }));
       state.sounds.push(...added);
       return added;
@@ -293,7 +329,10 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
     update_sound: ({ sound }) => {
       const i = state.sounds.findIndex((x) => x.id === sound.id);
       if (i < 0) throw new Error(`Son introuvable : ${sound.id}`);
-      const next = { ...sound, volume: Math.min(1, Math.max(0, sound.volume)) };
+      // Same rule as `sound_color` in the Rust store: trimmed, #rrggbb, lowercased.
+      const trimmed = sound.color?.trim().toLowerCase() ?? null;
+      const color = trimmed && /^#[0-9a-f]{6}$/.test(trimmed) ? trimmed : null;
+      const next = { ...sound, color, volume: Math.min(1, Math.max(0, sound.volume)) };
       state.sounds[i] = next;
       // Same rule as the Rust store: hotkey is ignored here, set_hotkey owns bindings.
       next.hotkey = state.hotkeys.find((h) => sameAction(h.action, { type: "sound", id: sound.id }))?.accelerator ?? null;
@@ -305,14 +344,52 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       state.hotkeys = state.hotkeys.filter((h) => !(h.action.type === "sound" && h.action.id === id));
       return null;
     },
-    play_sound: ({ id }) => (play(id), null),
-    stop_sound: ({ id }) => (stop(id), null),
-    stop_all_sounds: () => {
+    // Like the app, sound commands of a page since reloaded are ignored.
+    play_sound: ({ id, page: from, stops }) => {
+      if (from !== page) return null;
+      // Like the app: clicked before the "stop all" shortcut ran, it just ends.
+      if (stops < hotkeyStops) emit("engine", { type: "soundEnded", id });
+      else play(id);
+      return null;
+    },
+    stop_sound: ({ id, page: from }) => {
+      if (from !== page) return null;
+      cancelDownload(id);
+      stop(id);
+      return null;
+    },
+    stop_all_sounds: ({ page: from }) => {
+      if (from !== page) return null;
+      [...downloading.keys()].forEach(cancelDownload);
       [...playing.keys()].forEach(stop);
       return null;
     },
     myinstants_trending: ({ page }) => myinstants(null, page),
     myinstants_search: ({ query, page }) => myinstants(query, page),
+    myinstants_play: ({ sound, replace, page: from, stops }) => {
+      if (from !== page) throw new Error("page rechargée : relance le son");
+      if (stops < hotkeyStops) {
+        const id = `myinstants:${sound.mp3Url}#cancelled-${++remotePlays}`;
+        emit("engine", { type: "soundEnded", id });
+        return id;
+      }
+      if (replace) {
+        cancelDownload(replace);
+        stop(replace);
+      }
+      const id = `myinstants:${sound.mp3Url}#${++remotePlays}`;
+      // Like the app: the id comes back at once, the sound starts once downloaded.
+      const start = () => {
+        downloading.delete(id);
+        if (options.myinstantsOffline) {
+          emit("engine", { type: "soundEnded", id });
+          emit("sound-failed", { id, message: "MyInstants est injoignable (pas de connexion internet ?)" });
+        } else playFor(id, { durationMs: 1500, loop: false });
+      };
+      if (options.myinstantsOffline || remoteDownloadMs > 0) downloading.set(id, setTimeout(start, remoteDownloadMs));
+      else start();
+      return id;
+    },
     myinstants_add: ({ sound, category }) => {
       const added: Sound = {
         id: `snd-mi-${++importCounter}`,
@@ -325,6 +402,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
         durationMs: 2000,
         source: "myinstants",
         sourceUrl: sound.pageUrl,
+        color: null,
       };
       state.sounds.push(added);
       return added;
@@ -409,6 +487,24 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
       state.status = { ...state.status, running: false, lastError: message, restarting: true, revision: state.status.revision + 1 };
       emit("engine", { type: "deviceError", message });
     },
+    simulateHotkeyStopAll() {
+      hotkeyStops += 1;
+      [...downloading.keys()].forEach(cancelDownload);
+      [...playing.keys()].forEach(stop);
+      emit("sounds-stopped", hotkeyStops);
+    },
+    simulatePageLoad() {
+      page += 1;
+      [...downloading.keys()].forEach(cancelDownload);
+      [...playing.keys()].forEach(stop);
+    },
+    simulateSoundEnded(id) {
+      emit("engine", { type: "soundEnded", id });
+    },
+    simulateSoundFailed(id, message) {
+      emit("engine", { type: "soundEnded", id });
+      emit("sound-failed", { id, message });
+    },
     simulateRecovery() {
       state.status = { ...state.status, running: true, lastError: null, restarting: false, revision: state.status.revision + 1 };
       emit("engine", { type: "recovered", message: "Son rétabli." });
@@ -491,6 +587,8 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
     simulateDragEvent: dispatchDrop,
     dispose() {
       timers.forEach(clearInterval);
+      downloading.forEach(clearTimeout);
+      downloading.clear();
       playing.forEach(clearInterval);
       timers.clear();
       playing.clear();
