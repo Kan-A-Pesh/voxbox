@@ -8,7 +8,10 @@ import { App } from "../App";
 import { SEARCH_DEBOUNCE_MS } from "./sounds/Explorer";
 import { BUILTIN_PRESETS } from "../ipc/generated/presets";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 const voiceCards = () =>
   within(screen.getByRole("list", { name: "Voix disponibles" })).getAllByRole("listitem");
@@ -268,12 +271,18 @@ describe("MyInstants explorer", () => {
     await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
     const count = () => screen.getAllByRole("button", { name: /^Écouter / }).length;
     const first = (await screen.findAllByRole("button", { name: /^Écouter / })).length;
-    for (let page = 2; page <= 6; page++) {
+    const loadPage = async (page: number) => {
       await scrollToEnd();
       await waitFor(() => expect(callsOf("myinstants_trending")).toHaveLength(page));
-    }
-    expect(count()).toBeGreaterThan(first); // page 3 brought new sounds
+      await waitFor(() => expect(screen.queryByText(/^Chargement/)).not.toBeInTheDocument());
+    };
+    await loadPage(2);
+    expect(count()).toBe(first); // a page of repeats adds no card
+    await loadPage(3);
+    await waitFor(() => expect(count()).toBeGreaterThan(first)); // page 3 brought new sounds
     const afterRepeats = count();
+    for (let page = 4; page <= 6; page++) await loadPage(page);
+    expect(count()).toBe(afterRepeats); // pages 4 to 6 repeat: still no new card
     // Three pages of repeats in a row: scrolling no longer loads on its own.
     expect(await screen.findByText(/n'apportaient rien de nouveau/)).toBeInTheDocument();
     await scrollToEnd();
@@ -282,7 +291,6 @@ describe("MyInstants explorer", () => {
     await user.click(screen.getByRole("button", { name: "Charger plus" }));
     await waitFor(() => expect(count()).toBeGreaterThan(afterRepeats));
     expect(callsOf("myinstants_trending")).toHaveLength(7);
-    vi.unstubAllGlobals();
   });
 
   it("retries a failed page from the pagination error", async () => {
