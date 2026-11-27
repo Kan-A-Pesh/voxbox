@@ -3,9 +3,10 @@ import type { RemoteSound } from "../../ipc/contract";
 import { errorMessage, useVox } from "../../state/store";
 import { useDebounced } from "../../lib/useDebounced";
 import { logClientError } from "../../lib/clientLog";
+import { sendSoundCommand } from "../../lib/soundCommands";
 import { onGridKeyDown } from "../../lib/gridNav";
 import { PixelIcon } from "../../components/PixelIcon";
-import { EmptyState, ErrorPanel } from "../../components/Controls";
+import { EmptyState, ErrorPanel, IconButton } from "../../components/Controls";
 
 export const SEARCH_DEBOUNCE_MS = 300;
 
@@ -23,15 +24,25 @@ type Feed = {
 /** After this many pages in a row with nothing new, scrolling stops loading on its own ("Charger plus" still works). */
 const MAX_STALE_PAGES = 3;
 
-export function Explorer({ query: input, onClearQuery }: { query: string; onClearQuery: () => void }) {
-  const { backend, snapshot, setSnapshot, call, notify } = useVox();
+export function Explorer({ query: input, onClearQuery, onPendingChange }: {
+  query: string;
+  onClearQuery: () => void;
+  /** How many of its sounds play or download (« Tout arrêter » stops or cancels them). */
+  onPendingChange?: (pending: number) => void;
+}) {
+  const { backend, snapshot, setSnapshot, call, soundCall, notify } = useVox();
   const query = useDebounced(input.trim(), SEARCH_DEBOUNCE_MS);
   const [feed, setFeed] = useState<Feed>({ query, sounds: [], page: 0, hasMore: true, stale: 0, loading: true, error: null });
   const request = useRef(0);
   const sentinel = useRef<HTMLDivElement>(null);
-  const audio = useRef<HTMLAudioElement>(null);
-  const [previewing, setPreviewing] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  // The last playback of each MyInstants sound (its id and whether it went to
+  // everyone or the headset only), and the ones still downloading.
+  const [playback, setPlayback] = useState<Record<string, { id: string; mode: Mode }>>({});
+  const [starting, setStarting] = useState<Set<string>>(() => new Set());
+  // Taken synchronously on the first click, so a second click during the switch is ignored.
+  const busy = useRef(new Set<string>());
+  // Sounds of this screen that "Tout arrêter" can stop, downloading ones included.
+  useEffect(() => onPendingChange?.(starting.size + Object.keys(playback).length), [starting, playback, onPendingChange]);
 
   const load = useCallback(
     async (q: string, page: number) => {
@@ -94,25 +105,100 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
     return () => io.disconnect();
   }, [autoLoad]);
 
-  useEffect(() => () => audio.current?.pause(), []);
+  // A playback counts from its confirmed start until the engine says it ended,
+  // whether or not a progress event arrived yet.
+  const playingMode = (sound: RemoteSound): Mode | null => playback[sound.mp3Url]?.mode ?? null;
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    backend
+      .listen("engine", (e) => {
+        if (e.type !== "soundEnded") return;
+        if (!started.current.delete(e.id)) {
+          // Ended before its play command answered (stopped at once, or no free voice):
+          // kept only while that sound's request is pending.
+          const url = remoteUrlOf(e.id);
+          if (url !== null && pending.current.has(url)) endedEarly.current.add(e.id);
+          return;
+        }
+        setPlayback((p) => {
+          const url = Object.keys(p).find((k) => p[k]?.id === e.id);
+          if (!url) return p;
+          const next = { ...p };
+          delete next[url];
+          return next;
+        });
+      })
+      .then((u) => (alive ? (unlisten = u) : u()));
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [backend]);
 
-  function preview(s: RemoteSound) {
-    const el = audio.current;
-    if (!el) return;
-    setPreviewError(null);
-    if (previewing === s.mp3Url) {
-      el.pause();
-      setPreviewing(null);
-      return;
+  // Every playback this screen started, stopped when leaving it. A request still
+  // downloading when the screen goes away stops its sound as soon as it starts.
+  const started = useRef(new Set<string>());
+  const endedEarly = useRef(new Set<string>());
+  // Sounds whose play request still waits for its answer.
+  const pending = useRef(new Set<string>());
+  const gone = useRef(false);
+  useEffect(() => {
+    gone.current = false;
+    const ids = started.current;
+    return () => {
+      gone.current = true;
+      // Stopping a play still downloading cancels it: it never starts.
+      ids.forEach((id) => void sendSoundCommand(backend, (page) => backend.invoke("stop_sound", { id, page })).catch(() => undefined));
+      ids.clear();
+    };
+  }, [backend]);
+
+  async function listen(s: RemoteSound, mode: Mode) {
+    const url = s.mp3Url;
+    if (busy.current.has(url)) return;
+    busy.current.add(url);
+    pending.current.add(url);
+    setStarting((set) => new Set(set).add(url));
+    try {
+      const mine = playback[url];
+      const forget = () =>
+        setPlayback((p) => {
+          if (p[url]?.id !== mine?.id) return p;
+          const next = { ...p };
+          delete next[url];
+          return next;
+        });
+      if (mine?.mode === mode) {
+        await soundCall((b, page) => b.invoke("stop_sound", { id: mine.id, page }));
+        forget();
+        return;
+      }
+      // Switching mode: the app stops the old playback and starts the new one in one
+      // request, so a "Tout arrêter" clicked meanwhile cancels both.
+      if (mine) forget();
+      const id = await soundCall((b, page, stops) =>
+        b.invoke("myinstants_play", { sound: s, preview: mode === "preview", replace: mine?.id ?? null, page, stops }),
+      );
+      if (gone.current) {
+        if (id) void sendSoundCommand(backend, (page) => backend.invoke("stop_sound", { id, page })).catch(() => undefined);
+        return;
+      }
+      if (!id || endedEarly.current.delete(id)) return;
+      started.current.add(id);
+      setPlayback((p) => ({ ...p, [url]: { id, mode } }));
+    } finally {
+      busy.current.delete(url);
+      pending.current.delete(url);
+      endedEarly.current.forEach((id) => remoteUrlOf(id) === url && endedEarly.current.delete(id));
+      if (!gone.current) {
+        setStarting((set) => {
+          const next = new Set(set);
+          next.delete(url);
+          return next;
+        });
+      }
     }
-    el.src = s.mp3Url;
-    el.currentTime = 0;
-    setPreviewing(s.mp3Url);
-    el.play().catch(() => {
-      setPreviewing(null);
-      setPreviewError(`Aperçu impossible pour « ${s.title} ».`);
-      logClientError("aperçu MyInstants", `Aperçu impossible pour « ${s.title} » (${s.mp3Url}).`);
-    });
   }
 
   const inBank = useMemo(
@@ -139,20 +225,6 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
       <p className="hint explorer__caption">
         {query ? `Résultats pour « ${query} »` : "Sons populaires sur MyInstants"} · seule fonction en ligne de VoxBox
       </p>
-      <audio
-        ref={audio}
-        preload="none"
-        onEnded={() => setPreviewing(null)}
-        onError={() => {
-          if (previewing) {
-            setPreviewError("Aperçu indisponible : vérifie ta connexion.");
-            logClientError("aperçu MyInstants", `Aperçu indisponible (${previewing}).`);
-          }
-          setPreviewing(null);
-        }}
-      />
-      {previewError ? <p className="field__error" role="alert">{previewError}</p> : null}
-
       {feed.error && feed.sounds.length === 0 ? (
         <ErrorPanel
           title="MyInstants est injoignable"
@@ -179,10 +251,11 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
                 key={`${s.pageUrl}-${i}`}
                 sound={s}
                 seed={i}
-                playing={previewing === s.mp3Url}
+                playing={playingMode(s)}
+                starting={starting.has(s.mp3Url)}
                 added={inBank.has(s.pageUrl)}
                 categories={categories}
-                onPreview={() => preview(s)}
+                onListen={(mode) => void listen(s, mode)}
                 onAdd={(c) => add(s, c)}
               />
             ))}
@@ -210,16 +283,29 @@ export function Explorer({ query: input, onClearQuery }: { query: string; onClea
   );
 }
 
+type Mode = "play" | "preview";
+
+/** Playback ids of MyInstants sounds: `myinstants:<mp3 url>#<unique>` (see `play_remote` in src-tauri/src/state.rs). */
+const REMOTE_ID_PREFIX = "myinstants:";
+
+/** The sound a MyInstants playback id plays, or null for another id. */
+function remoteUrlOf(id: string): string | null {
+  const end = id.lastIndexOf("#");
+  return id.startsWith(REMOTE_ID_PREFIX) && end > REMOTE_ID_PREFIX.length ? id.slice(REMOTE_ID_PREFIX.length, end) : null;
+}
+
 const TILE_COLORS = ["#b9a6ff", "#7fe7ff", "#ff9f1c", "#5cf28a", "#ff8ad8", "#ffd23f", "#ff5d5d"];
 const NEW = "__new";
 
-function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd }: {
+function RemoteTile({ sound, seed, playing, starting, added, categories, onListen, onAdd }: {
   sound: RemoteSound;
   seed: number;
-  playing: boolean;
+  /** How it is playing right now, or null. */
+  playing: Mode | null;
+  starting: boolean;
   added: boolean;
   categories: string[];
-  onPreview: () => void;
+  onListen: (mode: Mode) => void;
   onAdd: (category: string | null) => Promise<boolean>;
 }) {
   const [picking, setPicking] = useState(false);
@@ -244,10 +330,13 @@ function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd 
         type="button"
         data-grid-item
         className="remote__play"
-        onClick={onPreview}
-        aria-label={`${playing ? "Arrêter l'aperçu de" : "Écouter"} ${sound.title}`}
+        onClick={() => onListen("play")}
+        disabled={starting}
+        aria-busy={starting}
+        title="Jouer (micro + casque)"
+        aria-label={`${playing === "play" ? "Arrêter" : "Jouer"} ${sound.title}`}
       >
-        <PixelIcon name={playing ? "stop" : "play"} scale={2} color={color} />
+        <PixelIcon name={playing === "play" ? "stop" : "play"} scale={2} color={color} />
         <span className="remote__title">{sound.title}</span>
       </button>
       {picking ? (
@@ -275,6 +364,15 @@ function RemoteTile({ sound, seed, playing, added, categories, onPreview, onAdd 
         </form>
       ) : (
         <div className="remote__foot">
+          <IconButton
+            icon={playing === "preview" ? "stop" : "headphones"}
+            size={1}
+            className="remote__preview"
+            disabled={starting}
+            pressed={playing === "preview"}
+            label={playing === "preview" ? `Arrêter l'aperçu de ${sound.title}` : `Aperçu de ${sound.title} (casque seulement)`}
+            onClick={() => onListen("preview")}
+          />
           {added ? (
             <span className="remote__added"><PixelIcon name="check" scale={1} /> Dans ta banque</span>
           ) : (

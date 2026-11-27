@@ -396,6 +396,7 @@ div.identity { align-items: center; }
 .swatch { width: 22px; height: 22px; padding: 0; border: 0; }
 .swatch[aria-checked="true"] { outline: 2px solid var(--cream); outline-offset: 2px; }
 .swatch:focus-visible { outline: var(--focus); outline-offset: 2px; }
+.swatch--none { background: transparent; box-shadow: inset 0 0 0 2px var(--line-strong); }
 
 /* Effect chain: one effect expanded at a time. */
 .chain { display: flex; flex-direction: column; gap: 12px; }
@@ -445,8 +446,9 @@ div.identity { align-items: center; }
 .voice__name { font-weight: 500; line-height: 1.3; hyphens: auto; }
 .tag-ai { margin-left: 6px; font: 11px var(--font-mono); color: var(--cyan); letter-spacing: 0.04em; }
 .voice__key { font-size: 11px; }
+.voice__tools { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; }
+.voice__fav { margin-left: 6px; color: var(--star); display: inline-flex; vertical-align: middle; }
 .voice__action {
-  position: absolute; top: 6px; right: 6px;
   display: grid; place-items: center;
   width: 32px; height: 32px; padding: 0;
   border: 0; background: var(--raise); color: var(--muted);
@@ -454,6 +456,7 @@ div.identity { align-items: center; }
   transition: opacity 120ms, color 120ms;
 }
 .voice:hover .voice__action, .voice:focus-within .voice__action, .voice.is-opened .voice__action { opacity: 1; }
+.voice__action.icon-btn--accent[aria-pressed="true"] { color: var(--star); }
 .voice__action:hover { color: var(--cream); background: var(--line-strong); }
 @media (hover: none) { .voice__action { opacity: 1; } }
 .voice-new {
@@ -490,7 +493,7 @@ div.identity { align-items: center; }
 .pad__name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pad__meta { display: flex; align-items: center; gap: 10px; min-height: 17px; }
 .pad__meta kbd { font-size: 11px; }
-.pad__loop { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.pad__loop { display: inline-flex; align-items: center; color: var(--violet); }
 .pad__tools {
   position: absolute; top: 50%; right: 6px; transform: translateY(-50%);
   display: flex;
@@ -501,6 +504,9 @@ div.identity { align-items: center; }
 .pad.is-editing .pad__tools { background: var(--raise); }
 .pad:hover .pad__tools, .pad:focus-within .pad__tools, .pad.is-editing .pad__tools { opacity: 1; }
 .pad__fav { color: var(--star); display: inline-flex; }
+/* A color picked for the sound: its glyph and a thin edge. */
+.pad.has-color .pad__glyph, .pad.has-color .pad__main:hover .pad__glyph { color: var(--pad-color); }
+.pad.has-color .pad__main { box-shadow: inset 2px 0 0 var(--pad-color); }
 @media (hover: none) { .pad__tools { opacity: 1; } }
 .pad__progress { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--line); pointer-events: none; }
 .pad__progress span { display: block; height: 100%; background: var(--violet); }
@@ -524,7 +530,8 @@ div.identity { align-items: center; }
 .remote__play svg { flex: none; }
 .remote__title { font-weight: 500; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .remote__foot { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); background: var(--panel); opacity: 0; transition: opacity 120ms; }
-.remote:hover .remote__foot, .remote:focus-within .remote__foot { opacity: 1; }
+.remote:hover .remote__foot, .remote:focus-within .remote__foot, .remote.is-playing .remote__foot { opacity: 1; }
+.remote__foot { display: flex; align-items: center; gap: 4px; }
 @media (hover: none) { .remote__foot { opacity: 1; } }
 .remote__foot:has(.remote__added) { position: static; transform: none; opacity: 1; padding: 0 12px 10px 44px; background: none; }
 .remote:has(.remote__added) .remote__play { padding-bottom: 2px; }

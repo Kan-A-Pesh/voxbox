@@ -182,6 +182,25 @@ fn sound_buses_mix_volume_loop_restart_stop_and_events() {
     );
 }
 #[test]
+fn a_preview_is_heard_in_the_headset_only() {
+    let (mut graph, mut control, settings) = graph();
+    settings.ptt.store(true, Ordering::Relaxed); // mic gated: only sounds can reach the cable.
+    send(
+        &mut control,
+        Command::preview("apercu", sound(vec![0.4; BLOCK]), 1.0),
+    );
+    let (cable, monitor) = render(&mut graph, 0.0);
+    assert_eq!(cable, [0.0; BLOCK], "the others never hear a preview");
+    close(monitor[0], 0.4);
+    send(
+        &mut control,
+        Command::play("joue", sound(vec![0.4; BLOCK]), 1.0, false),
+    );
+    let (cable, monitor) = render(&mut graph, 0.0);
+    close(cable[0], 0.4);
+    close(monitor[0], 0.4);
+}
+#[test]
 fn mixing_clamps_and_meter_reports_dbfs_at_33_hz() {
     let (mut graph, mut control, settings) = graph();
     settings.monitor.store(true, Ordering::Relaxed);

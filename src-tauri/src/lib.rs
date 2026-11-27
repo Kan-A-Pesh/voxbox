@@ -55,6 +55,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .on_page_load(|webview, payload| {
+            // Each page load (reload included) takes over the sounds: see `start_page`.
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                if let Some(state) = webview.try_state::<AppState>() {
+                    state.start_page();
+                }
+            }
+        })
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             init_logging(&data_dir.join("logs"));
@@ -114,6 +122,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::begin_page,
+            commands::set_voice_favorite,
             commands::list_devices,
             commands::update_settings,
             commands::set_active_voice,
@@ -134,6 +144,7 @@ pub fn run() {
             commands::delete_ai_model,
             commands::open_logs_folder,
             commands::log_client_error,
+            commands::myinstants_play,
         ])
         .run(tauri::generate_context!())
         .expect("VoxBox n'a pas pu démarrer");

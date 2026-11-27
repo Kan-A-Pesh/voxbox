@@ -4,16 +4,18 @@ import { useVox } from "../state/store";
 import { acceleratorFor } from "../lib/hotkeys";
 import { onGridKeyDown } from "../lib/gridNav";
 import { fold } from "../lib/text";
+import { inOrder } from "../lib/inOrder";
 import { PixelIcon } from "../components/PixelIcon";
 import { Chips, EmptyState, IconButton, SearchField } from "../components/Controls";
 import { VoiceEditor } from "./voices/VoiceEditor";
 import { AiVoicePanel } from "./voices/AiVoicePanel";
 import { AiImportPanel } from "./voices/AiImportPanel";
 
-type Filter = "all" | VoiceCategory;
+type Filter = "all" | "favorites" | VoiceCategory;
 
 const FILTERS: { value: Filter; label: string }[] = [
   { value: "all", label: "Toutes" },
+  { value: "favorites", label: "Favoris" },
   { value: "fun", label: "Fun" },
   { value: "effects", label: "Effets" },
   { value: "ai", label: "IA" },
@@ -32,7 +34,19 @@ const DISCARD = "Abandonner les modifications non enregistrées ?";
 
 /** `leaveGuardRef` lets the app ask before navigating away from an unsaved voice draft. */
 export function VoicesScreen({ leaveGuardRef }: { leaveGuardRef: RefObject<(() => boolean) | null> }) {
-  const { snapshot, selectVoice } = useVox();
+  const { backend, snapshot, setSnapshot, call, selectVoice } = useVox();
+  // Stars clicked and not answered yet, by voice: shown over the app's list, so a
+  // snapshot pushed meanwhile (a hotkey) neither hides them nor turns the next
+  // click on the same voice into a repeat.
+  const [intents, setIntents] = useState<Record<string, boolean>>({});
+  const favorites = useMemo(() => {
+    const set = new Set(snapshot.settings.favoriteVoiceIds);
+    for (const [id, favorite] of Object.entries(intents)) {
+      if (favorite) set.add(id);
+      else set.delete(id);
+    }
+    return set;
+  }, [snapshot.settings.favoriteVoiceIds, intents]);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [panel, setPanel] = useState<Panel | null>(null);
@@ -52,12 +66,31 @@ export function VoicesScreen({ leaveGuardRef }: { leaveGuardRef: RefObject<(() =
 
   const voices = useMemo(() => {
     const q = fold(query.trim());
-    return snapshot.voices.filter(
+    const matching = snapshot.voices.filter(
       (v) =>
-        (filter === "all" || v.category === filter) &&
+        (filter === "all" || (filter === "favorites" ? favorites.has(v.id) : v.category === filter)) &&
         (!q || fold(v.name).includes(q) || fold(v.description).includes(q)),
     );
-  }, [snapshot.voices, filter, query]);
+    // Favorites first, each group in its usual order (sort is stable).
+    return filter === "all" ? [...matching].sort((a, b) => Number(favorites.has(b.id)) - Number(favorites.has(a.id))) : matching;
+  }, [snapshot.voices, filter, query, favorites]);
+
+  // Each star is saved on its own (the app adds or removes that voice in the saved
+  // list) and sent one at a time, so the answers come back in click order. Once none
+  // is waiting, the list shown is the app's last answer.
+  const starsInFlight = useRef(0);
+  async function toggleFavorite(id: string) {
+    const favorite = !favorites.has(id);
+    setIntents((i) => ({ ...i, [id]: favorite }));
+    starsInFlight.current += 1;
+    const saved = await inOrder(backend, "favorite-voices", () => call("set_voice_favorite", { id, favorite }));
+    starsInFlight.current -= 1;
+    if (starsInFlight.current > 0) return;
+    const favoriteVoiceIds = saved?.favoriteVoiceIds ?? (await backend.invoke("get_snapshot", {}).catch(() => null))?.settings.favoriteVoiceIds;
+    if (starsInFlight.current > 0) return;
+    if (favoriteVoiceIds) setSnapshot((snap) => ({ ...snap, settings: { ...snap.settings, favoriteVoiceIds } }));
+    setIntents({});
+  }
 
   function openPanel(next: PanelRequest | null): boolean {
     if (unsaved.current && !window.confirm(DISCARD)) return false;
@@ -130,6 +163,8 @@ export function VoicesScreen({ leaveGuardRef }: { leaveGuardRef: RefObject<(() =
                   key={v.id}
                   voice={v}
                   active={v.id === snapshot.settings.activeVoiceId}
+                  favorite={favorites.has(v.id)}
+                  onFavorite={() => toggleFavorite(v.id)}
                   opened={v.id === openedId}
                   accelerator={acceleratorFor(snapshot.hotkeys, { type: "voice", id: v.id })}
                   onSelect={() => select(v)}
@@ -140,6 +175,9 @@ export function VoicesScreen({ leaveGuardRef }: { leaveGuardRef: RefObject<(() =
             {createTile}
           </div>
         )}
+        {voices.length === 0 && !query && filter === "favorites" ? (
+          <p className="page__note">Aucune voix favorite : survole une voix et clique sur l'étoile pour la garder en haut de la liste.</p>
+        ) : null}
         {voices.length === 0 && !query && filter === "custom" ? (
           <p className="page__note">Tu n'as pas encore de voix à toi : pars de zéro ou duplique une voix intégrée.</p>
         ) : null}
@@ -176,9 +214,11 @@ export function VoicesScreen({ leaveGuardRef }: { leaveGuardRef: RefObject<(() =
   );
 }
 
-function VoiceCard({ voice, active, opened, accelerator, onSelect, onEdit }: {
+function VoiceCard({ voice, active, favorite, opened, accelerator, onSelect, onFavorite, onEdit }: {
   voice: VoicePreset;
   active: boolean;
+  favorite: boolean;
+  onFavorite: () => void;
   opened: boolean;
   accelerator: string | null;
   onSelect: () => void;
@@ -186,7 +226,7 @@ function VoiceCard({ voice, active, opened, accelerator, onSelect, onEdit }: {
 }) {
   const action = voice.builtin && !voice.aiModelId ? "Dupliquer" : "Modifier";
   return (
-    <li className={`voice${active ? " is-active" : ""}${opened ? " is-opened" : ""}`}>
+    <li className={`voice${active ? " is-active" : ""}${opened ? " is-opened" : ""}${favorite ? " is-favorite" : ""}`}>
       <button
         type="button"
         data-grid-item
@@ -200,17 +240,33 @@ function VoiceCard({ voice, active, opened, accelerator, onSelect, onEdit }: {
           <span className="voice__name">
             {voice.name}
             {voice.category === "ai" ? <span className="tag-ai">IA</span> : null}
+            {favorite ? (
+              <span className="voice__fav" title="Favorite">
+                <PixelIcon name="star" scale={1} />
+              </span>
+            ) : null}
           </span>
           {accelerator ? <kbd className="voice__key">{accelerator}</kbd> : null}
         </span>
       </button>
-      <IconButton
-        className="voice__action"
-        icon={action === "Dupliquer" ? "copy" : "pencil"}
-        size={1}
-        label={`${action} ${voice.name}`}
-        onClick={onEdit}
-      />
+      <div className="voice__tools">
+        <IconButton
+          className="voice__action"
+          icon={favorite ? "star" : "favorite"}
+          size={1}
+          tone="accent"
+          pressed={favorite}
+          label={favorite ? `Retirer ${voice.name} des favoris` : `Ajouter ${voice.name} aux favoris`}
+          onClick={onFavorite}
+        />
+        <IconButton
+          className="voice__action"
+          icon={action === "Dupliquer" ? "copy" : "pencil"}
+          size={1}
+          label={`${action} ${voice.name}`}
+          onClick={onEdit}
+        />
+      </div>
     </li>
   );
 }

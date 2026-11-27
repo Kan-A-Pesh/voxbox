@@ -190,9 +190,16 @@ impl Engine {
             .pressed
             .store(pressed, std::sync::atomic::Ordering::Relaxed);
     }
-    pub fn play_sound(&self, id: &str, sound: DecodedSound, volume: f32, looped: bool) {
+    /// False when the engine has stopped and refused it (no event will follow).
+    pub fn play_sound(&self, id: &str, sound: DecodedSound, volume: f32, looped: bool) -> bool {
         self.runtime
-            .command(graph::Command::play(id, sound, volume, looped));
+            .command(graph::Command::play(id, sound, volume, looped))
+    }
+    /// Plays `sound` in the headset only (not sent to the virtual mic). False when
+    /// the engine has stopped and refused it.
+    pub fn preview_sound(&self, id: &str, sound: DecodedSound, volume: f32) -> bool {
+        self.runtime
+            .command(graph::Command::preview(id, sound, volume))
     }
     pub fn stop_sound(&self, id: &str) {
         self.runtime.command(graph::Command::Stop(id.into()));

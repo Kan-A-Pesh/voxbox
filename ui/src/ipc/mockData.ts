@@ -43,7 +43,7 @@ export const CUSTOM_VOICES: VoicePreset[] = [
 ];
 
 const s = (id: string, name: string, category: string | null, durationMs: number, extra: Partial<Sound> = {}): Sound => ({
-  id, name, category, durationMs, favorite: false, volume: 0.8, loop: false, hotkey: null, source: "local", sourceUrl: null, ...extra,
+  id, name, category, durationMs, favorite: false, volume: 0.8, loop: false, hotkey: null, source: "local", sourceUrl: null, color: null, ...extra,
 });
 
 export const SOUNDS: Sound[] = [
@@ -86,6 +86,7 @@ export const SETTINGS: AppSettings = {
   soundMonitorVolume: 0.5,
   aiParams: { pitchSemitones: 0, indexRate: 0.75, blockMs: 160, crossfadeMs: 40 },
   startMinimized: false,
+  favoriteVoiceIds: [],
 };
 
 export const MYINSTANTS_TITLES = [

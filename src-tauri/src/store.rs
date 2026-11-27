@@ -52,6 +52,8 @@ pub struct AppSettings {
     pub sound_monitor_volume: f32,
     pub ai_params: RvcParams,
     pub start_minimized: bool,
+    /// Voices starred by the user (built-in, AI or custom ids), shown first.
+    pub favorite_voice_ids: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -67,6 +69,7 @@ impl Default for AppSettings {
             sound_monitor_volume: 0.5,
             ai_params: RvcParams::default(),
             start_minimized: false,
+            favorite_voice_ids: Vec::new(),
         }
     }
 }
@@ -85,7 +88,11 @@ pub struct SettingsPatch {
     pub sound_monitor_volume: Option<f32>,
     pub ai_params: Option<RvcParams>,
     pub start_minimized: Option<bool>,
+    pub favorite_voice_ids: Option<Vec<String>>,
 }
+
+/// More favorites than this is not a real use: the list stays bounded.
+const MAX_FAVORITE_VOICES: usize = 500;
 
 impl AppSettings {
     pub fn apply(&mut self, p: SettingsPatch) {
@@ -118,6 +125,19 @@ impl AppSettings {
         }
         if let Some(v) = p.start_minimized {
             self.start_minimized = v;
+        }
+        if let Some(ids) = p.favorite_voice_ids {
+            let mut kept: Vec<String> = Vec::new();
+            for id in ids {
+                let id = id.trim();
+                if !id.is_empty()
+                    && !kept.iter().any(|k| k == id)
+                    && kept.len() < MAX_FAVORITE_VOICES
+                {
+                    kept.push(id.to_owned());
+                }
+            }
+            self.favorite_voice_ids = kept;
         }
     }
 }
@@ -194,6 +214,16 @@ pub struct Sound {
     pub duration_ms: u32,
     pub source: SoundSource,
     pub source_url: Option<String>,
+    /// `#rrggbb` chosen by the user, or none (the bank's default look).
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+/// Accepts `#rrggbb` only (what the UI's palette sends).
+pub fn sound_color(color: Option<String>) -> Option<String> {
+    color.map(|c| c.trim().to_ascii_lowercase()).filter(|c| {
+        c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
+    })
 }
 
 /// Where a sound's audio lives on disk (kept out of the UI contract).
@@ -482,6 +512,7 @@ impl Store {
         stored.sound.favorite = sound.favorite;
         stored.sound.volume = sound.volume.clamp(0.0, 1.0);
         stored.sound.looped = sound.looped;
+        stored.sound.color = sound_color(sound.color);
         stored.sound.hotkey = None;
         let mut out = stored.sound.clone();
         self.save_sounds()?;
@@ -573,6 +604,7 @@ mod tests {
                 duration_ms: 1200,
                 source: SoundSource::Local,
                 source_url: None,
+                color: None,
             },
             file: format!("{id}.mp3"),
         }
@@ -587,6 +619,44 @@ mod tests {
             builtin: false,
             license: None,
         }
+    }
+
+    #[test]
+    fn favorite_voices_are_trimmed_deduplicated_and_bounded() {
+        let mut settings = AppSettings::default();
+        settings.apply(SettingsPatch {
+            favorite_voice_ids: Some(vec![
+                " robot ".into(),
+                "robot".into(),
+                String::new(),
+                "ai-x".into(),
+            ]),
+            ..Default::default()
+        });
+        assert_eq!(settings.favorite_voice_ids, ["robot", "ai-x"]);
+        settings.apply(SettingsPatch {
+            favorite_voice_ids: Some((0..600).map(|i| format!("v{i}")).collect()),
+            ..Default::default()
+        });
+        assert_eq!(settings.favorite_voice_ids.len(), MAX_FAVORITE_VOICES);
+        // Older settings files have no list: nothing is starred.
+        let old: AppSettings = serde_json::from_str(r#"{"activeVoiceId":"robot"}"#).unwrap();
+        assert!(old.favorite_voice_ids.is_empty());
+    }
+
+    #[test]
+    fn sound_colors_accept_palette_hex_only() {
+        assert_eq!(sound_color(Some("#FF9F1C".into())), Some("#ff9f1c".into()));
+        for bad in ["red", "#fff", "#12345g", "url(x)", "#1234567"] {
+            assert_eq!(sound_color(Some(bad.into())), None, "{bad}");
+        }
+        assert_eq!(sound_color(None), None);
+        // Sounds saved before colors existed still load.
+        let old: Sound = serde_json::from_str(
+            r#"{"id":"a","name":"A","category":null,"favorite":false,"volume":1.0,"loop":false,"hotkey":null,"durationMs":1,"source":"local","sourceUrl":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.color, None);
     }
 
     #[test]

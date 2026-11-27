@@ -3,6 +3,7 @@ import type { Backend, CommandArgs, CommandName, CommandResult } from "../ipc/ba
 import type { AppSettings, Snapshot, EngineStatus } from "../ipc/contract";
 import { getBackend } from "../ipc/client";
 import { logClientError, setLogBackend } from "../lib/clientLog";
+import { beginSoundPage, sendSoundCommand } from "../lib/soundCommands";
 
 export interface Toast { id: number; kind: "info" | "error"; message: string }
 
@@ -12,6 +13,8 @@ interface Store {
   setSnapshot: (update: (s: Snapshot) => Snapshot) => void;
   /** Invoke a command; failures surface as an error toast and resolve to undefined. */
   call: <K extends CommandName>(cmd: K, args: CommandArgs<K>) => Promise<CommandResult<K> | undefined>;
+  /** Like `call`, for a sound command: sent in click order with this page's number (see lib/soundCommands.ts). */
+  soundCall: <T>(send: (backend: Backend, page: number, stops: number) => Promise<T>) => Promise<T | undefined>;
   /** Optimistic settings patch, reconciled with the backend's answer (reverted on failure). */
   patchSettings: (patch: Partial<AppSettings>) => Promise<void>;
   /** Optimistically activate a voice; only the latest choice may write what the backend answered. */
@@ -53,7 +56,9 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
         const backend = injected ?? (await getBackend());
         // As soon as the bridge exists: a failing startup is written to the log too.
         setLogBackend(backend);
-        const snapshot = await backend.invoke("get_snapshot", {});
+        // The sound commands need this page's number and the stop-all shortcut's
+        // count before the first click (see lib/soundCommands.ts).
+        const [snapshot] = await Promise.all([backend.invoke("get_snapshot", {}), beginSoundPage(backend)]);
         if (cancelled) return;
         setLoad({ kind: "ready", backend, snapshot });
         unlisten = await backend.listen("snapshot-changed", (s) => {
@@ -91,11 +96,41 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
 
   const backend = load.kind === "ready" ? load.backend : null;
 
+  // A play the app accepted could not start (MyInstants download, decoding): it is
+  // already in the log, the toast says why.
+  useEffect(() => {
+    if (!backend) return;
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    backend
+      .listen("sound-failed", (e) => notify(e.message, "error", true))
+      .then((u) => (alive ? (unlisten = u) : u()))
+      .catch((e) => logClientError("écoute des échecs de lecture", errorMessage(e)));
+
+    return () => {
+      alive = false;
+      unlisten?.();
+    };
+  }, [backend, notify]);
+
   const call = useCallback(
     async <K extends CommandName>(cmd: K, args: CommandArgs<K>) => {
       if (!backend) return undefined;
       try {
         return await backend.invoke(cmd, args);
+      } catch (e) {
+        notify(errorMessage(e), "error");
+        return undefined;
+      }
+    },
+    [backend, notify],
+  );
+
+  const soundCall = useCallback(
+    async <T,>(send: (backend: Backend, page: number, stops: number) => Promise<T>) => {
+      if (!backend) return undefined;
+      try {
+        return await sendSoundCommand(backend, (page, stops) => send(backend, page, stops));
       } catch (e) {
         notify(errorMessage(e), "error");
         return undefined;
@@ -113,6 +148,33 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
   // too: an answer only updates the keys it patched, and only those no newer patch has touched since.
   const patchSeq = useRef(0);
   const latestPatchOf = useRef<Partial<Record<keyof AppSettings, number>>>({});
+  // Patches reach the app one after the other, in the order they were made (two
+  // commands in flight could run in any order: a list like the favorite voices
+  // would lose a change).
+  const settingsChain = useRef<Promise<unknown>>(Promise.resolve());
+  const nextPatch = useRef<{ patch: Partial<AppSettings>; sent: Promise<AppSettings | undefined> } | null>(null);
+  const sendPatch = useCallback(
+    (patch: Partial<AppSettings>) => {
+      const waiting = nextPatch.current;
+      // Only a patch of the same settings joins the waiting one (a slider being dragged):
+      // others go on their own, so a failure (e.g. a device that cannot open) rolls back
+      // only what it carried.
+      const sameKeys = (a: object, b: object) => Object.keys(a).sort().join() === Object.keys(b).sort().join();
+      if (waiting && sameKeys(waiting.patch, patch)) {
+        Object.assign(waiting.patch, patch);
+        return waiting.sent;
+      }
+      const merged = { ...patch };
+      const sent = settingsChain.current.then(() => {
+        if (nextPatch.current?.patch === merged) nextPatch.current = null;
+        return call("update_settings", { patch: merged });
+      });
+      nextPatch.current = { patch: merged, sent };
+      settingsChain.current = sent;
+      return sent;
+    },
+    [call],
+  );
   const patchSettings = useCallback(
     async (patch: Partial<AppSettings>) => {
       const before = settingsRef.current;
@@ -122,7 +184,7 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
       keys.forEach((k) => (latestPatchOf.current[k] = seq));
       const ownKeys = () => keys.filter((k) => latestPatchOf.current[k] === seq);
       setSnapshot((s) => ({ ...s, settings: { ...s.settings, ...patch } }));
-      const settings = await call("update_settings", { patch });
+      const settings = await sendPatch(patch);
       if (settings) {
         setSnapshot((s) => ({ ...s, settings: { ...s.settings, ...pick(settings, ownKeys()) } }));
         return;
@@ -136,7 +198,7 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
           : { ...s, settings: { ...s.settings, ...pick(before, ownKeys()) } },
       );
     },
-    [backend, call, setSnapshot],
+    [backend, sendPatch, setSnapshot],
   );
 
   const selectVoice = useCallback(
@@ -159,9 +221,9 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
   const value = useMemo<Store | null>(
     () =>
       load.kind === "ready"
-        ? { snapshot: load.snapshot, backend: load.backend, setSnapshot, call, patchSettings, selectVoice, toasts, notify, dismiss }
+        ? { snapshot: load.snapshot, backend: load.backend, setSnapshot, call, soundCall, patchSettings, selectVoice, toasts, notify, dismiss }
         : null,
-    [load, setSnapshot, call, patchSettings, selectVoice, toasts, notify, dismiss],
+    [load, setSnapshot, call, soundCall, patchSettings, selectVoice, toasts, notify, dismiss],
   );
 
   if (load.kind === "loading") return <BootScreen />;

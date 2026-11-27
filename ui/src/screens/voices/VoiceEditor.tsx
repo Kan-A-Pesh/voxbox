@@ -6,6 +6,7 @@ import { PixelIcon } from "../../components/PixelIcon";
 import { VOICE_ICONS } from "../../components/icons";
 import { Field, IconButton, Slider, Toggle } from "../../components/Controls";
 import { SidePanel } from "../../components/SidePanel";
+import { ColorSwatches } from "../../components/ColorSwatches";
 
 export const VOICE_COLORS = [
   "#b9a6ff", "#7fe7ff", "#ff9f1c", "#ff5d5d", "#5cf28a", "#b6f25c",
@@ -208,20 +209,12 @@ export function VoiceEditor({ voiceId, duplicateOf, onUnsavedChange, onClose, on
           </div>
         ) : null}
 
-        <div className="picker__swatches" role="radiogroup" aria-label="Couleur">
-          {(VOICE_COLORS.includes(draft.color) ? VOICE_COLORS : [draft.color, ...VOICE_COLORS]).map((c) => (
-            <button
-              key={c}
-              type="button"
-              role="radio"
-              aria-checked={draft.color === c}
-              aria-label={c}
-              className="swatch"
-              style={{ background: c }}
-              onClick={() => setDraft({ ...draft, color: c })}
-            />
-          ))}
-        </div>
+        <ColorSwatches
+          label="Couleur"
+          options={VOICE_COLORS.includes(draft.color) ? VOICE_COLORS : [draft.color, ...VOICE_COLORS]}
+          value={draft.color}
+          onChange={(c) => c && setDraft({ ...draft, color: c })}
+        />
 
         <Field label="Description" htmlFor={`${id}-desc`}>
           <input

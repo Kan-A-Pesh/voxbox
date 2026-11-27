@@ -6,13 +6,20 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use voxbox_dsp::{EffectDescriptor, EffectSpec, VoicePreset};
 use voxbox_engine::{DecodedSound, Engine, EngineEvent, EngineStatus};
 use voxbox_rvc::{AiModelMeta, BackendInfo, RvcRuntime, RvcStream};
 
 use crate::hotkeys::{HotkeyAction, HotkeyBinding, HotkeyEvent, Matcher};
 use crate::store::{AppSettings, Sound, Store};
+
+/// Level of a MyInstants sound played before it is in the bank (bank sounds have their own).
+const REMOTE_VOLUME: f32 = 0.8;
+/// Decoded MyInstants sounds kept in memory for replays; older ones are dropped.
+const REMOTE_CACHE: usize = 16;
+const REMOTE_PREFIX: &str = "myinstants:";
+const ENGINE_STOPPED: &str = "le moteur audio est arrêté : redémarre VoxBox";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +59,123 @@ impl Resources {
     }
 }
 
+/// Sound plays the app accepted but has not started yet (a MyInstants download,
+/// a first decode). A "stop all" or a stop of that id cancels them; starting one
+/// and stopping run under one lock, so the engine never gets a cancelled play
+/// after the stop that cancelled it.
+///
+/// Order between clicks comes from the commands themselves: the UI sends them in
+/// click order, and accepting a play, stopping a sound and stopping all are
+/// synchronous commands, run one at a time on the main thread in that order.
+#[derive(Default)]
+struct PlaybackGate {
+    pending: Mutex<Pending>,
+}
+
+#[derive(Default)]
+struct Pending {
+    /// The admission waiting to start, per playback id (a bank sound replayed
+    /// keeps its id: only its latest admission may start).
+    by_id: HashMap<String, u64>,
+    last: u64,
+    /// How many times the "stop all" shortcut ran (see [`AppState::hotkey_stops`]).
+    hotkey_stops: u64,
+}
+
+/// One accepted play: only this admission may start it or report its failure.
+struct Admission {
+    id: String,
+    token: u64,
+}
+
+impl PlaybackGate {
+    /// Accepts a play of `id`. `stops`: the shortcut's stop count known when the
+    /// play was clicked (None for a play that is not a UI click, e.g. a hotkey):
+    /// a play clicked before a shortcut stop is refused (None). Checked under the
+    /// same lock the shortcut stop takes, so the two can never interleave.
+    fn admit(&self, id: &str, stops: Option<u64>) -> Option<Admission> {
+        let mut pending = self.pending.lock();
+        if stops.is_some_and(|stops| stops < pending.hotkey_stops) {
+            return None;
+        }
+        pending.last += 1;
+        let token = pending.last;
+        pending.by_id.insert(id.to_string(), token);
+        Some(Admission {
+            id: id.to_string(),
+            token,
+        })
+    }
+
+    fn hotkey_stops(&self) -> u64 {
+        self.pending.lock().hotkey_stops
+    }
+
+    /// The shortcut's "stop all": counts it, then stops like [`Self::stop_all`].
+    /// Returns the new count and the plays that had not started.
+    fn stop_all_from_hotkey(&self, send_stop: impl FnOnce()) -> (u64, Vec<String>) {
+        let mut pending = self.pending.lock();
+        pending.hotkey_stops += 1;
+        send_stop();
+        let cancelled = pending.by_id.drain().map(|(id, _)| id).collect();
+        (pending.hotkey_stops, cancelled)
+    }
+
+    /// Takes `admission` out if it is still the one waiting (not stopped, not replaced).
+    fn take(pending: &mut Pending, admission: &Admission) -> bool {
+        if pending.by_id.get(&admission.id) != Some(&admission.token) {
+            return false;
+        }
+        pending.by_id.remove(&admission.id);
+        true
+    }
+
+    /// Runs `send_play` and returns true only if `admission` is still waiting to start.
+    fn start(&self, admission: &Admission, send_play: impl FnOnce()) -> bool {
+        let mut pending = self.pending.lock();
+        if !Self::take(&mut pending, admission) {
+            return false;
+        }
+        send_play();
+        true
+    }
+
+    /// Drops a failed `admission`; true if it was still waiting (its end is due).
+    fn fail(&self, admission: &Admission) -> bool {
+        Self::take(&mut self.pending.lock(), admission)
+    }
+
+    /// Returns true when `id` had not started (it never will).
+    fn stop(&self, id: &str, send_stop: impl FnOnce()) -> bool {
+        let mut pending = self.pending.lock();
+        let cancelled = pending.by_id.remove(id).is_some();
+        send_stop();
+        cancelled
+    }
+
+    /// Returns the plays that had not started (they never will).
+    fn stop_all(&self, send_stop: impl FnOnce()) -> Vec<String> {
+        let mut pending = self.pending.lock();
+        send_stop();
+        pending.by_id.drain().map(|(id, _)| id).collect()
+    }
+}
+
+/// Cache key of a MyInstants sound; its playback ids are `<key>#<unique>`.
+pub fn remote_key(sound: &voxbox_myinstants::RemoteSound) -> String {
+    format!("{REMOTE_PREFIX}{}", sound.mp3_url)
+}
+
+/// Runs once a sound is loaded (or failed to): starts an admitted play.
+type LoadWaiter = Box<dyn FnOnce(&AppState, Result<DecodedSound, String>) + Send>;
+
+/// Payload of the `sound-failed` event: a play the app accepted could not start.
+#[derive(Clone, Serialize)]
+pub struct SoundFailed {
+    pub id: String,
+    pub message: String,
+}
+
 pub struct AppState {
     app: AppHandle,
     pub store: Mutex<Store>,
@@ -61,6 +185,13 @@ pub struct AppState {
     pub resources: Resources,
     pub matcher: Arc<Mutex<Matcher>>,
     sound_cache: Mutex<HashMap<String, DecodedSound>>,
+    /// Plays accepted but not started yet (download, first decode).
+    sound_gate: PlaybackGate,
+    /// Downloads and decodes in progress, by cache key, with what waits for them:
+    /// replaying a sound still loading never starts a second load.
+    loads: Mutex<HashMap<String, Vec<LoadWaiter>>>,
+    /// The UI page allowed to play and stop sounds (see [`Self::start_page`]).
+    page: std::sync::atomic::AtomicU64,
     /// Serializes `apply_voice`: a slow AI model load can never install an older
     /// selection over a newer one.
     voice_lock: Mutex<()>,
@@ -110,6 +241,9 @@ impl AppState {
             resources,
             matcher,
             sound_cache: Mutex::new(HashMap::new()),
+            sound_gate: PlaybackGate::default(),
+            loads: Mutex::new(HashMap::new()),
+            page: std::sync::atomic::AtomicU64::new(0),
             preview: Mutex::new(None),
             voice_lock: Mutex::new(()),
         }
@@ -247,7 +381,10 @@ impl AppState {
         self.apply_voice()
     }
 
-    pub fn play_sound(&self, id: &str) -> AppResult<()> {
+    /// Plays a sound of the bank. A sound not decoded yet starts once decoded,
+    /// unless stopped meanwhile; a decoding failure arrives as `sound-failed`.
+    /// `stops`: see [`Self::hotkey_stops`] (None for the sound's own hotkey).
+    pub fn play_sound(&self, id: &str, stops: Option<u64>) -> AppResult<()> {
         let (path, volume, looped) = {
             let store = self.store.lock();
             let s = store.sound(id)?;
@@ -257,22 +394,259 @@ impl AppState {
                 s.sound.looped,
             )
         };
+        let Some(admission) = self.sound_gate.admit(id, stops) else {
+            // Clicked before the shortcut stopped everything: it just ends.
+            self.emit_ended(id);
+            return Ok(());
+        };
+        let start = move |state: &AppState, decoded: Result<DecodedSound, String>| match decoded {
+            Ok(decoded) => {
+                let mut sent = true;
+                let started = state.sound_gate.start(&admission, || {
+                    sent = state
+                        .engine
+                        .play_sound(&admission.id, decoded, volume, looped);
+                });
+                if started && !sent {
+                    state.report_failed(&admission.id, ENGINE_STOPPED);
+                }
+            }
+            Err(message) => state.sound_failed(&admission, &message),
+        };
         let cached = self.sound_cache.lock().get(id).cloned();
-        let decoded = match cached {
-            Some(d) => d,
+        match cached {
+            Some(decoded) => start(self, Ok(decoded)),
             None => {
-                let d = voxbox_engine::decode_file(&path)?;
-                self.sound_cache.lock().insert(id.to_string(), d.clone());
-                d
+                let key = id.to_string();
+                self.load_then(key.clone(), Box::new(start), move |state| {
+                    let decoded = voxbox_engine::decode_file(&path).map_err(|e| e.to_string())?;
+                    state.sound_cache.lock().insert(key, decoded.clone());
+                    Ok(decoded)
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Loads `key` on its own thread (once, whoever else waits for it) then runs
+    /// `waiter` with the result.
+    fn load_then(
+        &self,
+        key: String,
+        waiter: LoadWaiter,
+        load: impl FnOnce(&AppState) -> Result<DecodedSound, String> + Send + 'static,
+    ) {
+        {
+            let mut loads = self.loads.lock();
+            if let Some(waiting) = loads.get_mut(&key) {
+                waiting.push(waiter);
+                return;
+            }
+            loads.insert(key.clone(), vec![waiter]);
+        }
+        let app = self.app.clone();
+        let loaded_key = key.clone();
+        let spawned = std::thread::Builder::new()
+            .name(String::from("voxbox-sound-load"))
+            .spawn(move || {
+                let state = app.state::<AppState>();
+                let result = load(&state);
+                state.finish_load(&loaded_key, &result);
+            });
+        if let Err(e) = spawned {
+            self.finish_load(&key, &Err(format!("chargement du son impossible : {e}")));
+        }
+    }
+
+    fn finish_load(&self, key: &str, result: &Result<DecodedSound, String>) {
+        let waiters = self.loads.lock().remove(key).unwrap_or_default();
+        for waiter in waiters {
+            waiter(self, result.clone());
+        }
+    }
+
+    /// A play the app accepted could not start: the UI hears it ended, and why.
+    /// Nothing is reported when a newer play or a stop replaced it meanwhile.
+    fn sound_failed(&self, admission: &Admission, message: &str) {
+        let id = admission.id.as_str();
+        if !self.sound_gate.fail(admission) {
+            tracing::warn!("son « {id} » non joué (déjà arrêté ou relancé) : {message}");
+            return;
+        }
+        self.report_failed(id, message);
+    }
+
+    /// Tells the UI a play ended without playing, and why (logged).
+    fn report_failed(&self, id: &str, message: &str) {
+        tracing::error!("son « {id} » non joué : {message}");
+        self.emit_ended(id);
+        let failed = SoundFailed {
+            id: id.to_string(),
+            message: message.to_string(),
+        };
+        if let Err(e) = self.app.emit("sound-failed", failed) {
+            tracing::warn!("échec du son non transmis : {e}");
+        }
+    }
+
+    /// A play cancelled before it started ends for the UI too (the engine never had it).
+    fn emit_ended(&self, id: &str) {
+        let ended = EngineEvent::SoundEnded { id: id.to_string() };
+        if let Err(e) = self.app.emit("engine", ended) {
+            tracing::warn!("fin du son non transmise : {e}");
+        }
+    }
+
+    /// Stops a sound, or cancels it if it has not started yet.
+    pub fn stop_sound(&self, id: &str) {
+        if self.sound_gate.stop(id, || self.engine.stop_sound(id)) {
+            self.emit_ended(id);
+        }
+    }
+
+    /// The webview starts loading a page (a reload, a navigation): from now on only
+    /// the new page's sound commands count, and the previous page's sounds stop.
+    /// Driven by the webview itself, so a late request of the old page cannot
+    /// reorder it.
+    pub fn start_page(&self) {
+        self.page.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.stop_all_sounds();
+    }
+
+    /// The number of the page loaded now, for its sound commands.
+    pub fn current_page(&self) -> u64 {
+        self.page.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many times the "stop all" shortcut ran. The UI sends with each play
+    /// the count it knew when the play was clicked: a play clicked before a
+    /// shortcut press (still queued or on its way) is then refused, and just ends.
+    pub fn hotkey_stops(&self) -> u64 {
+        self.sound_gate.hotkey_stops()
+    }
+
+    /// The "stop all" shortcut: stops everything, and tells the UI (`sounds-stopped`).
+    pub fn stop_all_from_hotkey(&self) {
+        let (stops, cancelled) = self
+            .sound_gate
+            .stop_all_from_hotkey(|| self.engine.stop_all_sounds());
+        for id in cancelled {
+            self.emit_ended(&id);
+        }
+        if let Err(e) = self.app.emit("sounds-stopped", stops) {
+            tracing::warn!("arrêt des sons non transmis : {e}");
+        }
+    }
+
+    /// False for a command sent by a page since reloaded (it arrived late).
+    pub fn is_current_page(&self, page: u64) -> bool {
+        let current = self.page.load(std::sync::atomic::Ordering::SeqCst) == page;
+        if !current {
+            tracing::warn!("commande de son d'une page rechargée depuis, ignorée");
+        }
+        current
+    }
+
+    /// Stops every sound, including the ones still downloading or decoding.
+    pub fn stop_all_sounds(&self) {
+        for id in self.sound_gate.stop_all(|| self.engine.stop_all_sounds()) {
+            self.emit_ended(&id);
+        }
+    }
+
+    /// Downloads a MyInstants sound into a temporary folder of the sound bank, runs
+    /// `use_file` on it, then removes the folder (whatever `use_file` returned).
+    pub fn with_myinstants_file<T>(
+        &self,
+        sound: &voxbox_myinstants::RemoteSound,
+        use_file: impl FnOnce(&Path) -> AppResult<T>,
+    ) -> AppResult<T> {
+        let parent = self.store.lock().sounds_dir();
+        let tmp = parent.join(format!(".download-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp)
+            .map_err(|e| AppError::Other(format!("dossier temporaire impossible : {e}")))?;
+        let result = voxbox_myinstants::Client::new()
+            .download(sound, &tmp)
+            .map_err(AppError::from)
+            .and_then(|path| use_file(&path));
+        if let Err(e) = std::fs::remove_dir_all(&tmp) {
+            tracing::warn!("dossier temporaire non supprimé ({}) : {e}", tmp.display());
+        }
+        result
+    }
+
+    /// Plays a MyInstants sound without adding it to the bank: to everyone (mic +
+    /// headset) or, for a preview, in the headset only. Decoded once per session.
+    /// Returns at once a playback id unique to this request (for stop and progress
+    /// events), so stopping an older request never stops a newer play of the same
+    /// sound. The sound starts once downloaded unless stopped meanwhile; a failure
+    /// arrives as `sound-failed`.
+    pub fn play_remote(
+        &self,
+        sound: &voxbox_myinstants::RemoteSound,
+        preview: bool,
+        stops: u64,
+    ) -> String {
+        let key = remote_key(sound);
+        let id = format!("{key}#{}", uuid::Uuid::new_v4());
+        let Some(admission) = self.sound_gate.admit(&id, Some(stops)) else {
+            // Clicked before the shortcut stopped everything: it just ends.
+            self.emit_ended(&id);
+            return id;
+        };
+        let start = move |state: &AppState, decoded: Result<DecodedSound, String>| {
+            let decoded = match decoded {
+                Ok(decoded) => decoded,
+                Err(message) => return state.sound_failed(&admission, &message),
+            };
+            let id = admission.id.as_str();
+            let mut sent = true;
+            let started = state.sound_gate.start(&admission, || {
+                sent = if preview {
+                    state.engine.preview_sound(id, decoded, REMOTE_VOLUME)
+                } else {
+                    state.engine.play_sound(id, decoded, REMOTE_VOLUME, false)
+                };
+            });
+            if started && !sent {
+                state.report_failed(id, ENGINE_STOPPED);
             }
         };
-        self.engine.play_sound(id, decoded, volume, looped);
-        Ok(())
+        let cached = self.sound_cache.lock().get(&key).cloned();
+        match cached {
+            Some(decoded) => start(self, Ok(decoded)),
+            None => {
+                let sound = sound.clone();
+                self.load_then(key.clone(), Box::new(start), move |state| {
+                    let decoded = state
+                        .with_myinstants_file(&sound, |path| Ok(voxbox_engine::decode_file(path)?))
+                        .map_err(|e| e.to_string())?;
+                    state.cache_remote(key, decoded.clone());
+                    Ok(decoded)
+                });
+            }
+        }
+        id
+    }
+
+    fn cache_remote(&self, key: String, decoded: DecodedSound) {
+        let mut cache = self.sound_cache.lock();
+        let remote: Vec<String> = cache
+            .keys()
+            .filter(|k| k.starts_with(REMOTE_PREFIX))
+            .cloned()
+            .collect();
+        if remote.len() >= REMOTE_CACHE {
+            for key in remote.into_iter().take(REMOTE_CACHE / 2) {
+                cache.remove(&key);
+            }
+        }
+        cache.insert(key, decoded);
     }
 
     pub fn forget_sound(&self, id: &str) {
         self.sound_cache.lock().remove(id);
-        self.engine.stop_sound(id);
+        self.stop_sound(id);
     }
 
     pub fn refresh_hotkeys(&self) {
@@ -293,11 +667,11 @@ impl AppState {
             }
             HotkeyEvent::Released(_) => Ok(false),
             HotkeyEvent::Pressed(HotkeyAction::Sound { id }) => {
-                self.play_sound(&id)?;
+                self.play_sound(&id, None)?;
                 Ok(false)
             }
             HotkeyEvent::Pressed(HotkeyAction::StopAllSounds) => {
-                self.engine.stop_all_sounds();
+                self.stop_all_from_hotkey();
                 Ok(false)
             }
             HotkeyEvent::Pressed(HotkeyAction::ToggleVoice) => {
@@ -323,5 +697,111 @@ impl AppState {
         if let Err(e) = app.emit("snapshot-changed", self.snapshot()) {
             tracing::warn!("événement snapshot-changed non envoyé : {e}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PlaybackGate;
+    use std::sync::{mpsc, Arc, Barrier};
+
+    #[test]
+    fn a_stop_all_cancels_the_plays_not_started_yet() {
+        let gate = PlaybackGate::default();
+        let downloading = gate.admit("downloading", None).unwrap();
+        assert_eq!(gate.stop_all(|| {}), ["downloading"]);
+        let mut sent = false;
+        assert!(!gate.start(&downloading, || sent = true));
+        assert!(!sent);
+        // A play accepted after the stop starts.
+        let later = gate.admit("later", None).unwrap();
+        assert!(gate.start(&later, || sent = true));
+        assert!(sent);
+    }
+
+    #[test]
+    fn stopping_one_play_cancels_it_and_leaves_the_others() {
+        let gate = PlaybackGate::default();
+        let a = gate.admit("a", None).unwrap();
+        let b = gate.admit("b", None).unwrap();
+        assert!(gate.stop("a", || {}));
+        assert!(!gate.start(&a, || {}));
+        assert!(gate.start(&b, || {}));
+        // Started once: a second start does nothing, and stopping it cancels nothing.
+        assert!(!gate.start(&b, || {}));
+        assert!(!gate.stop("b", || {}));
+    }
+
+    #[test]
+    fn only_the_latest_play_of_a_replayed_sound_starts_or_fails() {
+        // Pad A is clicked, stopped and clicked again while its first decode runs.
+        let gate = PlaybackGate::default();
+        let first = gate.admit("A", None).unwrap();
+        assert!(gate.stop("A", || {}));
+        let second = gate.admit("A", None).unwrap();
+        // The first decode ends first: it neither starts nor takes the second's place.
+        let mut which = Vec::new();
+        assert!(!gate.start(&first, || which.push("first")));
+        assert!(!gate.fail(&first));
+        assert!(gate.start(&second, || which.push("second")));
+        assert_eq!(which, ["second"]);
+        // Replayed without a stop: the older admission is replaced the same way.
+        let older = gate.admit("A", None).unwrap();
+        let newer = gate.admit("A", None).unwrap();
+        assert!(!gate.start(&older, || {}));
+        assert!(gate.fail(&newer));
+    }
+
+    #[test]
+    fn a_play_clicked_before_a_shortcut_stop_never_starts_whichever_runs_first() {
+        // The play's check and admission happen under the lock the shortcut takes:
+        // either the play is refused, or it was admitted and the stop cancels it.
+        for _ in 0..200 {
+            let gate = Arc::new(PlaybackGate::default());
+            let player = {
+                let gate = gate.clone();
+                std::thread::spawn(move || gate.admit("clicked", Some(0)))
+            };
+            let (stops, cancelled) = gate.stop_all_from_hotkey(|| {});
+            assert_eq!(stops, 1);
+            match player.join().unwrap() {
+                Some(admission) => {
+                    assert_eq!(cancelled, ["clicked"]);
+                    assert!(!gate.start(&admission, || {}));
+                }
+                None => assert!(cancelled.is_empty()),
+            }
+        }
+        // A play clicked knowing the latest count is accepted.
+        let gate = PlaybackGate::default();
+        gate.stop_all_from_hotkey(|| {});
+        assert!(gate.admit("old", Some(0)).is_none());
+        let fresh = gate.admit("fresh", Some(1)).unwrap();
+        assert!(gate.start(&fresh, || {}));
+    }
+
+    #[test]
+    fn a_stop_racing_a_start_always_reaches_the_engine_last() {
+        // The play has passed its check and is about to send when the stop arrives:
+        // the stop must wait, so the engine never ends on a cancelled play.
+        let gate = Arc::new(PlaybackGate::default());
+        let admission = gate.admit("p", None).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let in_play = Arc::new(Barrier::new(2));
+        let player = {
+            let (gate, tx, in_play) = (gate.clone(), tx.clone(), in_play.clone());
+            std::thread::spawn(move || {
+                gate.start(&admission, || {
+                    in_play.wait();
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    tx.send("play").unwrap();
+                })
+            })
+        };
+        in_play.wait();
+        assert!(gate.stop_all(|| tx.send("stop").unwrap()).is_empty());
+        assert!(player.join().unwrap());
+        drop(tx);
+        assert_eq!(rx.iter().collect::<Vec<_>>(), ["play", "stop"]);
     }
 }
