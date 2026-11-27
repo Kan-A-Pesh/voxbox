@@ -102,6 +102,12 @@ export interface RvcParams { pitchSemitones: number; indexRate: number; blockMs:
 export interface RemoteSound { title: string; mp3Url: string; pageUrl: string }
 export interface SearchPage { sounds: RemoteSound[]; hasMore: boolean }
 
+// ---- voxbox-voicemodels -------------------------------------------------------
+
+/** One RVC model listed on voice-models.com. `size` is the site's label ("88.59 MB"), possibly empty. */
+export interface RemoteModel { title: string; size: string; downloadUrl: string; pageUrl: string }
+export interface ModelPage { models: RemoteModel[]; hasMore: boolean }
+
 // ---- src-tauri ----------------------------------------------------------------
 
 export interface Sound {
@@ -204,6 +210,14 @@ export interface Commands {
   open_logs_folder: [Record<string, never>, null];
   /** Writes an error the UI showed (or an uncaught one) to voxbox.log. */
   log_client_error: [{ context: string; message: string }, null];
+  /** One page (25 models) of voice-models.com; an empty query lists the whole catalogue. */
+  voicemodels_search: [{ query: string; page: number }, ModelPage];
+  /**
+   * Downloads the model zip, extracts its .pth and imports it like import_ai_model (the archive's
+   * .index is not read: unsafe from an unknown source, so hasIndex is false).
+   * Emits "voicemodels-progress" (download, then convert). Also creates the AI voice.
+   */
+  voicemodels_add: [{ url: string; name: string }, AiModelMeta];
 }
 
 /** Backend -> UI events. */
@@ -216,4 +230,5 @@ export interface Events {
   "sound-failed": { id: string; message: string };
   /** The "stop all" shortcut ran: how many times so far. A play clicked before it is refused (it just ends). */
   "sounds-stopped": number;
+  "voicemodels-progress": { stage: "download" | "convert"; progress: number };
 }

@@ -522,6 +522,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     const panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     const submit = within(panel).getByRole("button", { name: "Importer" });
     expect(submit).toBeDisabled();
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
@@ -548,6 +549,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     const panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
     await user.click(within(panel).getByRole("button", { name: "Importer" }));
     expect(await within(panel).findByText("Import impossible")).toBeInTheDocument();
@@ -561,6 +563,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     const panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
     await user.clear(within(panel).getByLabelText("Nom de la voix"));
     await user.click(within(panel).getByRole("button", { name: "Importer" }));
@@ -613,6 +616,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     const panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
     await user.click(within(panel).getByRole("button", { name: "Importer" }));
     await user.click(within(panel).getByRole("button", { name: "Fermer le panneau" }));
@@ -750,6 +754,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     let panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
     await user.click(within(panel).getByRole("button", { name: "Importer" }));
     await user.click(within(panel).getByRole("button", { name: "Fermer le panneau" }));
@@ -768,6 +773,7 @@ describe("AI voices", () => {
     await user.click(await screen.findByRole("radio", { name: "IA" }));
     await user.click(screen.getByRole("button", { name: "Importer une voix IA" }));
     let panel = screen.getByRole("complementary", { name: "Importer une voix IA" });
+    await user.click(within(panel).getByRole("radio", { name: "Mes fichiers" }));
     await user.click(within(panel).getByRole("button", { name: /Choisir le \.pth/ }));
     await user.click(within(panel).getByRole("button", { name: "Importer" }));
     panel = await screen.findByRole("complementary", { name: "Voix IA" });

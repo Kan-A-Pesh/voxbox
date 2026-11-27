@@ -2,7 +2,28 @@
 
 The app never downloads or executes a Python installer. These scripts run on the
 packaging runner, except `convert_rvc.py`, which runs with the embedded interpreter
-when the user imports a local checkpoint.
+when the user imports a checkpoint: a local `.pth`, or one downloaded from
+voice-models.com (`voicemodels_add` in `src-tauri/src/commands.rs`).
+
+Downloaded checkpoints are untrusted. Before building the synthesizer, the script
+bounds every architecture field and their combined size (`validate_architecture`,
+`MAX_PARAMETERS`); the checkpoint is loaded with `weights_only=True`, and with
+`mmap=True` when it is in zip format. A downloaded one is converted with `--untrusted`
+(`voxbox_rvc::import_online_model`): PyTorch >= 2.10 required (earlier versions can
+execute code from a crafted checkpoint despite `weights_only=True`, GHSA-63cw-57p8-fm3p),
+zip format only, its directory bounded from the end records before it is parsed
+(`MAX_RECORDS`, `MAX_DIRECTORY_BYTES`), every record PyTorch reads whole (`data.pkl`,
+`version`…) bounded together (`MAX_METADATA_BYTES`), and its tensors memory-mapped. PyTorch's loader can
+still allocate from checkpoint-controlled metadata before the checkpoint is validated, so
+the converter also puts itself under an OS memory ceiling first (`limit_memory`,
+`MAX_UNTRUSTED_MEMORY` = 4 GiB: a Windows job object, `RLIMIT_AS` elsewhere): past it,
+the load fails, the converter exits 1 and the app removes its staging folder. A local legacy-format `.pth` is still accepted. The app
+kills the process after 20 minutes. The online import refuses a script below
+`CONVERTER_API = 3` (read by `voxbox_rvc::converter_api`), so an AI pack installed
+before this hardening must be updated: bump `CONVERTER_API` (and the app's
+`ONLINE_CONVERTER_API`) with every hardening the online import relies on. The
+archive's `.index` is never passed for an online import (`faiss.read_index` is not
+safe on untrusted files).
 
 ## Packaging contract
 

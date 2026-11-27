@@ -1,31 +1,21 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { errorMessage, useVox } from "../../state/store";
 import { PixelIcon } from "../../components/PixelIcon";
-import { ErrorPanel, Field, IconButton, ProgressBar } from "../../components/Controls";
+import { Chips, ErrorPanel, Field, IconButton, ProgressBar } from "../../components/Controls";
 import { SidePanel } from "../../components/SidePanel";
+import { getRunning, setRunning, useRunningImport } from "./aiImportRunning";
+import { VoiceModelsExplorer } from "./VoiceModelsExplorer";
 
 type ImportState = { kind: "idle" } | { kind: "error"; message: string };
-
-/**
- * The import in flight, shared by every panel instance: progress events carry no id, so only one
- * conversion runs at a time, and a reopened panel shows that one instead of starting another.
- */
-type Running = { name: string; progress: number };
-let running: Running | null = null;
-const subscribers = new Set<() => void>();
-function setRunning(next: Running | null) {
-  running = next;
-  subscribers.forEach((notify) => notify());
-}
-const subscribe = (cb: () => void) => {
-  subscribers.add(cb);
-  return () => void subscribers.delete(cb);
-};
-const getRunning = () => running;
+type Source = "online" | "files";
+const SOURCES: { value: Source; label: string }[] = [
+  { value: "online", label: "voice-models.com" },
+  { value: "files", label: "Mes fichiers" },
+];
 
 const fileName = (p: string) => p.split(/[\\/]/).pop() ?? p;
 
-/** Import an RVC v2 model (.pth + optional .index) as a new AI voice. */
+/** Import an RVC v2 model as a new AI voice: from voice-models.com, or from a .pth (+ optional .index). */
 export function AiImportPanel({ onClose, onImported }: { onClose: () => void; onImported: (voiceId: string | null) => void }) {
   const { backend, setSnapshot, call, notify } = useVox();
   const [pth, setPth] = useState<string | null>(null);
@@ -33,7 +23,8 @@ export function AiImportPanel({ onClose, onImported }: { onClose: () => void; on
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);
   const [state, setState] = useState<ImportState>({ kind: "idle" });
-  const inFlight = useSyncExternalStore(subscribe, getRunning);
+  const [source, setSource] = useState<Source>(() => (getRunning() && !getRunning()?.online ? "files" : "online"));
+  const inFlight = useRunningImport();
   const id = useId();
   // Closing the panel does not cancel a running import: its outcome then arrives as a toast.
   const open = useRef(true);
@@ -93,59 +84,70 @@ export function AiImportPanel({ onClose, onImported }: { onClose: () => void; on
   const busy = inFlight !== null;
   return (
     <SidePanel title="Importer une voix IA" onClose={onClose}>
-      <form className="panel-form" onSubmit={submit} noValidate aria-label="Importer une voix IA">
-        <p className="hint">Un modèle RVC v2 (.pth), et son index (.index) si tu l'as : il améliore le timbre.</p>
-        <div className="filepick">
-          <span className="label">Modèle .pth</span>
-          <div className="row">
-            <button type="button" className="btn" onClick={() => pick("pth")} disabled={busy}>
-              <PixelIcon name="folder" scale={1} /> {pth ? "Changer" : "Choisir le .pth"}
-            </button>
-            <span className="filepick__name">{pth ? fileName(pth) : "aucun fichier"}</span>
-          </div>
+      <div className="stack">
+        <Chips label="Source du modèle" options={SOURCES} value={source} onChange={setSource} />
+        {/* Both stay mounted: switching source keeps the results, and a running add keeps its outcome. */}
+        <div hidden={source !== "online"}>
+          <VoiceModelsExplorer onImported={onImported} />
         </div>
-        <div className="filepick">
-          <span className="label">Index .index (optionnel)</span>
-          <div className="row">
-            <button type="button" className="btn" onClick={() => pick("index")} disabled={busy || !pth}>
-              <PixelIcon name="folder" scale={1} /> {index ? "Changer" : "Choisir l'index"}
-            </button>
-            <span className="filepick__name">{index ? fileName(index) : "aucun fichier"}</span>
-            {index && !busy ? (
-              <IconButton icon="close" size={1} label="Retirer l'index" onClick={() => setIndex(null)} />
+        <div hidden={source !== "files"}>
+          <form className="panel-form" onSubmit={submit} noValidate aria-label="Importer une voix IA">
+            <p className="hint">Un modèle RVC v2 (.pth), et son index (.index) si tu l'as : il améliore le timbre.</p>
+            <div className="filepick">
+              <span className="label">Modèle .pth</span>
+              <div className="row">
+                <button type="button" className="btn" onClick={() => pick("pth")} disabled={busy}>
+                  <PixelIcon name="folder" scale={1} /> {pth ? "Changer" : "Choisir le .pth"}
+                </button>
+                <span className="filepick__name">{pth ? fileName(pth) : "aucun fichier"}</span>
+              </div>
+            </div>
+            <div className="filepick">
+              <span className="label">Index .index (optionnel)</span>
+              <div className="row">
+                <button type="button" className="btn" onClick={() => pick("index")} disabled={busy || !pth}>
+                  <PixelIcon name="folder" scale={1} /> {index ? "Changer" : "Choisir l'index"}
+                </button>
+                <span className="filepick__name">{index ? fileName(index) : "aucun fichier"}</span>
+                {index && !busy ? (
+                  <IconButton icon="close" size={1} label="Retirer l'index" onClick={() => setIndex(null)} />
+                ) : null}
+              </div>
+            </div>
+            <Field label="Nom de la voix" htmlFor={`${id}-name`} error={nameError}>
+              <input
+                id={`${id}-name`}
+                className="input"
+                value={name}
+                maxLength={40}
+                disabled={busy}
+                autoComplete="off"
+                aria-invalid={!!nameError}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (nameError && e.target.value.trim()) setNameError(null);
+                }}
+              />
+            </Field>
+            {inFlight?.online ? (
+              <p className="hint" role="status">Ajout de « {inFlight.name} » depuis voice-models.com en cours…</p>
+            ) : inFlight ? (
+              <div className="stack stack--tight">
+                <ProgressBar value={inFlight.progress} label="Conversion du modèle" />
+                <p className="hint" role="status">
+                  Conversion de « {inFlight.name} » en ONNX… {Math.round(inFlight.progress * 100)} %
+                </p>
+              </div>
             ) : null}
-          </div>
+            {state.kind === "error" ? <ErrorPanel title="Import impossible" message={state.message} /> : null}
+            <div className="panel-actions">
+              <button type="submit" className="btn btn--primary" disabled={!pth || busy}>
+                {busy ? "Conversion…" : "Importer"}
+              </button>
+            </div>
+          </form>
         </div>
-        <Field label="Nom de la voix" htmlFor={`${id}-name`} error={nameError}>
-          <input
-            id={`${id}-name`}
-            className="input"
-            value={name}
-            maxLength={40}
-            disabled={busy}
-            autoComplete="off"
-            aria-invalid={!!nameError}
-            onChange={(e) => {
-              setName(e.target.value);
-              if (nameError && e.target.value.trim()) setNameError(null);
-            }}
-          />
-        </Field>
-        {inFlight ? (
-          <div className="stack stack--tight">
-            <ProgressBar value={inFlight.progress} label="Conversion du modèle" />
-            <p className="hint" role="status">
-              Conversion de « {inFlight.name} » en ONNX… {Math.round(inFlight.progress * 100)} %
-            </p>
-          </div>
-        ) : null}
-        {state.kind === "error" ? <ErrorPanel title="Import impossible" message={state.message} /> : null}
-        <div className="panel-actions">
-          <button type="submit" className="btn btn--primary" disabled={!pth || busy}>
-            {busy ? "Conversion…" : "Importer"}
-          </button>
-        </div>
-      </form>
+      </div>
     </SidePanel>
   );
 }

@@ -24,7 +24,7 @@ try {
     Copy-Item (Join-Path $PSScriptRoot 'licenses') $OutputDir -Recurse
     $EmbeddedPython = Join-Path $OutputDir 'python.exe'
     # torch and faiss each bring an OpenMP runtime: never import them in one interpreter.
-    & $EmbeddedPython -I -c 'import torch, onnx, scipy; assert torch.__version__.startswith("2.6.0"); assert not torch.cuda.is_available()'
+    & $EmbeddedPython -I -c 'import torch, onnx, scipy; assert torch.__version__.startswith("2.10.0"); assert not torch.cuda.is_available()'
     if ($LASTEXITCODE -ne 0) { throw 'Embedded runtime smoke test failed (torch)' }
     & $EmbeddedPython -I -c 'import faiss, numpy'
     if ($LASTEXITCODE -ne 0) { throw 'Embedded runtime smoke test failed (faiss)' }

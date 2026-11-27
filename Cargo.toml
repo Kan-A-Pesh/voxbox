@@ -17,6 +17,7 @@ tracing = "0.1"
 voxbox-dsp = { path = "crates/voxbox-dsp" }
 voxbox-rvc = { path = "crates/voxbox-rvc" }
 voxbox-myinstants = { path = "crates/voxbox-myinstants" }
+voxbox-voicemodels = { path = "crates/voxbox-voicemodels" }
 voxbox-engine = { path = "crates/voxbox-engine" }
 
 [profile.dev.package."*"]

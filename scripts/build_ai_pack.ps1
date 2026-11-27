@@ -73,5 +73,49 @@ $SmokeOut = Join-Path $Tmp 'smoke-with-index'
 if ($LASTEXITCODE -ne 0) { throw 'Packaged converter failed with an index' }
 if (-not (Test-Path (Join-Path $SmokeOut 'index.bin'))) { throw 'Packaged converter wrote no index.bin' }
 
+# 6. Smoke test the online import path (--untrusted) on Windows, where the converter caps its
+#    memory with a job object: a valid zip checkpoint (re-saved, whatever the format of the
+#    bundled one) must convert under the ceiling, and an allocation past a small ceiling must fail.
+$SmokeZip = Join-Path $Tmp 'smoke-zip.pth'
+& $Python -I -c "import sys, torch; torch.save(torch.load(sys.argv[1], map_location='cpu', weights_only=True), sys.argv[2])" (Join-Path $Tmp "$($First.id).pth") $SmokeZip
+if ($LASTEXITCODE -ne 0) { throw 'Could not re-save the smoke-test checkpoint' }
+$SmokeOnline = Join-Path $Tmp 'smoke-online'
+& $Python -I (Join-Path $Converter 'convert_rvc.py') --pth $SmokeZip --output $SmokeOnline --id smoke-online --name Smoke --untrusted
+if ($LASTEXITCODE -ne 0) { throw 'Packaged converter failed on an online (--untrusted) checkpoint' }
+if (-not (Test-Path (Join-Path $SmokeOnline 'model.onnx'))) { throw 'Packaged converter wrote no model.onnx for --untrusted' }
+# The job object itself: assigned without error, and an allocation past its ceiling fails
+# (exit 0 only on MemoryError; a setup failure raises and exits non-zero).
+& $Python -I -c "import sys; sys.path.insert(0, sys.argv[1]); import convert_rvc as c; c.limit_memory(256 * 1024**2, 0)`ntry:`n    bytearray(1024**3)`nexcept MemoryError:`n    sys.exit(0)`nsys.exit('allocation past the job object ceiling succeeded')" $Converter
+if ($LASTEXITCODE -ne 0) { throw 'Converter memory ceiling (job object) could not be set or is not enforced' }
+# The same conversion through the converter's online path with a 64 MiB ceiling: it must reach
+# the ceiling (limit_memory called with that budget, job assigned) and then fail on memory,
+# publishing nothing. Any other failure, or a success, fails the build.
+$SmokeCapped = Join-Path $Tmp 'smoke-capped'
+$CappedCheck = Join-Path $Tmp 'smoke_capped.py'
+@'
+import sys
+sys.path.insert(0, sys.argv[1])
+import convert_rvc as c
+c.MAX_UNTRUSTED_MEMORY = 64 * 1024**2
+applied = []
+real_limit = c.limit_memory
+def limit(budget, mapped):
+    real_limit(budget, mapped)
+    applied.append(budget)
+c.limit_memory = limit
+try:
+    c.convert(c.Path(sys.argv[2]), None, c.Path(sys.argv[3]), "smoke-capped", "Smoke", untrusted=True)
+except Exception as error:
+    reached = applied == [c.MAX_UNTRUSTED_MEMORY]
+    memory = isinstance(error, MemoryError) or "memory" in str(error).lower()
+    if reached and memory:
+        sys.exit(0)
+    sys.exit(f"capped conversion failed for another reason (ceiling applied: {reached}): {error!r}")
+sys.exit("capped conversion succeeded past the memory ceiling")
+'@ | Set-Content $CappedCheck -Encoding UTF8
+& $Python -I $CappedCheck $Converter $SmokeZip $SmokeCapped
+if ($LASTEXITCODE -ne 0) { throw 'Converter memory ceiling (job object) is not enforced on --untrusted conversions' }
+if (Test-Path (Join-Path $SmokeCapped 'meta.json')) { throw 'A conversion past the memory ceiling published a model' }
+
 Remove-Item $Tmp -Recurse -Force
 Write-Host "Voix IA pack ready in $OutputDir"

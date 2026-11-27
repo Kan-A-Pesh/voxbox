@@ -1,13 +1,15 @@
 # Python 3.11 x64. CPU-only export; no CUDA installation or network at use time.
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.6.0+cpu
+# >= 2.10.0: earlier versions can execute code from a crafted checkpoint even with
+# weights_only=True (GHSA-63cw-57p8-fm3p), and the app imports downloaded checkpoints.
+torch==2.10.0+cpu
 numpy==1.26.4
 faiss-cpu==1.10.0
 onnx==1.17.0
 scipy==1.15.2
 # Fix torch/ONNX runtime dependencies for reproducible embedded packaging.
 protobuf==5.29.4
-sympy==1.13.1
+sympy==1.13.3
 filelock==3.18.0
 fsspec==2025.3.0
 Jinja2==3.1.6
