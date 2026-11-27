@@ -38,7 +38,8 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
     };
     backend
       .listen("engine", (e) => {
-        if (e.type === "deviceError") notify(e.message, "error");
+        // Engine messages are already in voxbox.log.
+        if (e.type === "deviceError") notify(e.message, "error", true);
         else if (e.type === "recovered") notify(e.message, "info");
         else if (e.type !== "statusChanged") return;
         refreshStatus();

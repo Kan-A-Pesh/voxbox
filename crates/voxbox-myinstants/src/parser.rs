@@ -70,7 +70,10 @@ pub fn parse_listing(html: &str, base_url: &str) -> SearchPage {
         });
     }
 
-    let has_more = document.select(&pagination_selector).any(|pagination| {
+    // The site no longer links the next page (it scrolls with JavaScript), but
+    // `?page=n` keeps working: a page with sounds may have a successor, an empty
+    // one is the end. An explicit "next" link still counts.
+    let has_next_link = document.select(&pagination_selector).any(|pagination| {
         pagination.select(&anchor_selector).any(|anchor| {
             let href = anchor.value().attr("href").unwrap_or_default();
             let is_next = anchor
@@ -83,6 +86,10 @@ pub fn parse_listing(html: &str, base_url: &str) -> SearchPage {
         })
     });
 
+    // A next link, or else any sound on the page, means asking for the next page;
+    // past the last one the site answers 404, which the client turns into the end.
+    // (Text such as "Page 50 of 50" is not used: a sound title could say the same.)
+    let has_more = has_next_link || !sounds.is_empty();
     SearchPage { sounds, has_more }
 }
 
@@ -160,6 +167,33 @@ mod tests {
         assert!(second.has_more);
         assert_fixture_sounds_are_well_formed(&first.sounds);
         assert_fixture_sounds_are_well_formed(&second.sounds);
+    }
+
+    #[test]
+    fn a_page_without_next_link_still_has_more_when_it_has_sounds() {
+        // Live page (2026-11): the site scrolls with JavaScript and links no next page.
+        let page = parse_listing(
+            include_str!("../tests/fixtures/trending_no_next_link.html"),
+            BASE_URL,
+        );
+        assert!(!page.sounds.is_empty());
+        assert!(
+            page.has_more,
+            "the next ?page= is asked until one comes back empty"
+        );
+        let past_the_end = parse_listing(
+            "<html><body><div id='instants_container'></div></body></html>",
+            BASE_URL,
+        );
+        assert!(!past_the_end.has_more);
+    }
+
+    #[test]
+    fn page_like_text_in_a_title_never_ends_the_list() {
+        let html = r#"<div class="instant"><button class="small-button" onclick="play('/media/sounds/a.mp3', 'a')"></button><a class="instant-link" href="/en/instant/a/">Page 1 of 1</a></div>"#;
+        let page = parse_listing(html, BASE_URL);
+        assert_eq!(page.sounds[0].title, "Page 1 of 1");
+        assert!(page.has_more);
     }
 
     #[test]

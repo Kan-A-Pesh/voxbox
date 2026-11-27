@@ -205,11 +205,22 @@ impl Client {
     }
 
     fn fetch_listing(&self, url: Url) -> Result<SearchPage> {
+        let past_first = url
+            .query_pairs()
+            .any(|(key, value)| key == "page" && value.parse::<u32>().is_ok_and(|p| p > 1));
         let response = self
             .http_client()?
             .get(url)
             .send()
             .map_err(|error| MyInstantsError::Network(error.to_string()))?;
+        // The site answers 404 one page past its last one: that is the end of the
+        // list, not an error (a first page that is missing still is one).
+        if past_first && response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(SearchPage {
+                sounds: Vec::new(),
+                has_more: false,
+            });
+        }
         let response = require_success(response)?;
         if !is_allowed_site_response(&self.base_url()?, response.url()) {
             return Err(MyInstantsError::InvalidUrl);

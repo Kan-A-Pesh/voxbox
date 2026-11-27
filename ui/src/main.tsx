@@ -8,6 +8,9 @@ import "./styles/app.css";
 import { App } from "./App";
 import { VoxProvider } from "./state/store";
 import { isScreenKey } from "./components/Sidebar";
+import { captureGlobalErrors } from "./lib/clientLog";
+
+captureGlobalErrors();
 
 const screen = new URLSearchParams(window.location.search).get("screen");
 

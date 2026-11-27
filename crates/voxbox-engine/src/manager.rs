@@ -245,6 +245,7 @@ impl<B: Backend> Manager<B> {
                         self.install(streams, previous);
                         let message =
                             format!("{error}. Les périphériques précédents restent utilisés.");
+                        tracing::warn!("{message}");
                         self.events.push(EngineEvent::DeviceError { message });
                     }
                     _ => {
@@ -434,9 +435,10 @@ impl<B: Backend> Manager<B> {
                 "Le traitement audio s’est arrêté de manière inattendue. Redémarrez VoxBox.".into(),
             );
         });
+        let message = "Le traitement audio s’est arrêté de manière inattendue. Redémarrez VoxBox.";
+        tracing::error!("{message}");
         self.events.push(EngineEvent::DeviceError {
-            message: "Le traitement audio s’est arrêté de manière inattendue. Redémarrez VoxBox."
-                .into(),
+            message: message.into(),
         });
     }
 }

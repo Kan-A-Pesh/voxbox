@@ -183,6 +183,8 @@ export interface Commands {
   delete_ai_model: [{ id: string }, null];
   /** Opens the folder holding voxbox.log in the file explorer. */
   open_logs_folder: [Record<string, never>, null];
+  /** Writes an error the UI showed (or an uncaught one) to voxbox.log. */
+  log_client_error: [{ context: string; message: string }, null];
 }
 
 /** Backend -> UI events. */

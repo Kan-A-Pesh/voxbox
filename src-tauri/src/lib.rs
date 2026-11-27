@@ -133,6 +133,7 @@ pub fn run() {
             commands::import_ai_model,
             commands::delete_ai_model,
             commands::open_logs_folder,
+            commands::log_client_error,
         ])
         .run(tauri::generate_context!())
         .expect("VoxBox n'a pas pu démarrer");

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Backend, CommandArgs, CommandName, CommandResult } from "../ipc/backend";
 import type { AppSettings, Snapshot, EngineStatus } from "../ipc/contract";
 import { getBackend } from "../ipc/client";
+import { logClientError, setLogBackend } from "../lib/clientLog";
 
 export interface Toast { id: number; kind: "info" | "error"; message: string }
 
@@ -16,7 +17,8 @@ interface Store {
   /** Optimistically activate a voice; only the latest choice may write what the backend answered. */
   selectVoice: (id: string) => Promise<void>;
   toasts: Toast[];
-  notify: (message: string, kind?: Toast["kind"]) => void;
+  /** `logged`: the message already comes from the app's log (engine events); others errors are written to it. */
+  notify: (message: string, kind?: Toast["kind"], logged?: boolean) => void;
   dismiss: (id: number) => void;
 }
 
@@ -49,6 +51,8 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
     (async () => {
       try {
         const backend = injected ?? (await getBackend());
+        // As soon as the bridge exists: a failing startup is written to the log too.
+        setLogBackend(backend);
         const snapshot = await backend.invoke("get_snapshot", {});
         if (cancelled) return;
         setLoad({ kind: "ready", backend, snapshot });
@@ -62,6 +66,7 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
         });
         if (cancelled) unlisten();
       } catch (e) {
+        logClientError("démarrage de l'interface", errorMessage(e));
         if (!cancelled) setLoad({ kind: "error", message: errorMessage(e) });
       }
     })();
@@ -71,7 +76,8 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
     };
   }, [injected, attempt]);
 
-  const notify = useCallback((message: string, kind: Toast["kind"] = "info") => {
+  const notify = useCallback((message: string, kind: Toast["kind"] = "info", logged = false) => {
+    if (kind === "error" && !logged) logClientError("message d'erreur", message);
     const id = ++toastId.current;
     setToasts((t) => [...t.slice(-2), { id, kind, message }]);
     const words = message.split(/\s+/).length;

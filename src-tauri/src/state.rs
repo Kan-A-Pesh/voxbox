@@ -224,6 +224,7 @@ impl AppState {
                     let message = format!(
                         "La voix IA « {name} » s'est arrêtée ({reason}). Resélectionne-la pour la relancer, ou choisis une autre voix."
                     );
+                    tracing::error!("{message}");
                     if let Err(e) = app.emit("engine", EngineEvent::DeviceError { message }) {
                         tracing::warn!("erreur de voix IA non transmise : {e}");
                     }

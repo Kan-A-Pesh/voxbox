@@ -38,6 +38,21 @@ fn search_encodes_spaces_accents_and_ampersands() {
 }
 
 #[test]
+fn one_page_past_the_last_is_the_end_not_an_error() {
+    let not_found =
+        || ResponseSpec::new(404, "Not Found", Some("text/html"), b"not found".to_vec());
+    let server = TestServer::start(vec![not_found(), not_found()]);
+    let client = Client::with_base_url(&server.base_url);
+    let past = client.trending(51).expect("past the end is an empty page");
+    assert!(past.sounds.is_empty() && !past.has_more);
+    assert!(
+        matches!(client.trending(1), Err(MyInstantsError::HttpStatus(404))),
+        "a missing first page is an error"
+    );
+    server.finish();
+}
+
+#[test]
 fn trending_routes_use_the_default_and_explicit_region_paths() {
     let server = TestServer::start(vec![
         ResponseSpec::html("<html></html>"),

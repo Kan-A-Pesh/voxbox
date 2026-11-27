@@ -8,7 +8,10 @@ import { App } from "../App";
 import { SEARCH_DEBOUNCE_MS } from "./sounds/Explorer";
 import { BUILTIN_PRESETS } from "../ipc/generated/presets";
 
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 const voiceCards = () =>
   within(screen.getByRole("list", { name: "Voix disponibles" })).getAllByRole("listitem");
@@ -239,6 +242,55 @@ describe("MyInstants explorer", () => {
     await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
     expect(await screen.findByText("MyInstants est injoignable")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Réessayer" })).toBeInTheDocument();
+  });
+
+  it("keeps each MyInstants sound once, goes past repeats, pauses scrolling after several", async () => {
+    // jsdom has no IntersectionObserver: a stand-in lets the test scroll to the end.
+    const observers: (() => void)[] = [];
+    vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        constructor(private readonly cb: (entries: { isIntersecting: boolean }[]) => void) {}
+        observe() {
+          observers.push(() => this.cb([{ isIntersecting: true }]));
+        }
+        disconnect() {}
+      },
+    );
+    const scrollToEnd = () => act(() => observers.at(-1)?.());
+    const user = userEvent.setup();
+    const { backend, callsOf } = renderApp("sounds");
+    const invoke = backend.invoke.bind(backend);
+    // The live site has no "next" link: pages keep saying there may be more, and they
+    // overlap. Page 3 is new, page 7 is new, every other page repeats page 1.
+    const source = (page?: number) => (page === 3 ? 2 : page === 7 ? 3 : 1);
+    vi.spyOn(backend, "invoke").mockImplementation(((cmd: string, args: { page?: number }) =>
+      cmd === "myinstants_trending"
+        ? invoke("myinstants_trending", { page: source(args.page) }).then((p) => ({ ...p, hasMore: true }))
+        : invoke(cmd as never, args as never)) as typeof backend.invoke);
+    await user.click(await screen.findByRole("tab", { name: "MyInstants" }));
+    const count = () => screen.getAllByRole("button", { name: /^Écouter / }).length;
+    const first = (await screen.findAllByRole("button", { name: /^Écouter / })).length;
+    const loadPage = async (page: number) => {
+      await scrollToEnd();
+      await waitFor(() => expect(callsOf("myinstants_trending")).toHaveLength(page));
+      await waitFor(() => expect(screen.queryByText(/^Chargement/)).not.toBeInTheDocument());
+    };
+    await loadPage(2);
+    expect(count()).toBe(first); // a page of repeats adds no card
+    await loadPage(3);
+    await waitFor(() => expect(count()).toBeGreaterThan(first)); // page 3 brought new sounds
+    const afterRepeats = count();
+    for (let page = 4; page <= 6; page++) await loadPage(page);
+    expect(count()).toBe(afterRepeats); // pages 4 to 6 repeat: still no new card
+    // Three pages of repeats in a row: scrolling no longer loads on its own.
+    expect(await screen.findByText(/n'apportaient rien de nouveau/)).toBeInTheDocument();
+    await scrollToEnd();
+    expect(callsOf("myinstants_trending")).toHaveLength(6);
+    // "Charger plus" still reaches the next page, which has new sounds.
+    await user.click(screen.getByRole("button", { name: "Charger plus" }));
+    await waitFor(() => expect(count()).toBeGreaterThan(afterRepeats));
+    expect(callsOf("myinstants_trending")).toHaveLength(7);
   });
 
   it("retries a failed page from the pagination error", async () => {
