@@ -8,6 +8,8 @@ on:
     branches: [main]
     paths:
       - scripts/build_ai_pack.ps1
+      - scripts/ai_pack_manifest.mjs
+      - scripts/minisign.mjs
       - installer/ai-pack.nsi
       - converter/**
       - scripts/publish_release.sh
@@ -20,6 +22,8 @@ on:
   pull_request:
     paths:
       - scripts/build_ai_pack.ps1
+      - scripts/ai_pack_manifest.mjs
+      - scripts/minisign.mjs
       - installer/ai-pack.nsi
       - converter/**
       - .github/workflows/ai-pack.yml
@@ -40,7 +44,7 @@ jobs:
           python-version: "3.11"
       - name: Build pack content
         shell: pwsh
-        run: ./scripts/build_ai_pack.ps1 -OutputDir pack
+        run: ./scripts/build_ai_pack.ps1 -OutputDir pack -Version ${{ github.run_number }}
       # windows-latest no longer ships NSIS on PATH: install a pinned version.
       - name: Install NSIS
         shell: pwsh
@@ -51,10 +55,28 @@ jobs:
           $makensis = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
           & $makensis /DPACK_DIR=$PWD\pack /DOUT_FILE=$PWD\VoxBox-Voix-IA-setup.exe installer\ai-pack.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # Published packs only (main): the manifest the app's pack update reads, signed with the
+      # updater key and checked against the public key the app ships with.
+      - name: Sign the pack manifest
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          node scripts/ai_pack_manifest.mjs write VoxBox-Voix-IA-setup.exe ${{ github.run_number }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx --yes @tauri-apps/cli@2 signer sign ai-pack-manifest.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/ai_pack_manifest.mjs verify ai-pack-manifest.json src-tauri/tauri.conf.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: voxbox-ai-pack
-          path: VoxBox-Voix-IA-setup.exe
+          path: |
+            VoxBox-Voix-IA-setup.exe
+            ai-pack-manifest.json
+            ai-pack-manifest.json.sig
           if-no-files-found: error
 
   publish:
@@ -82,5 +104,5 @@ jobs:
         run: >-
           ./scripts/publish_release.sh "ai-pack-${{ github.run_number }}"
           "VoxBox - Voix IA ${{ github.run_number }}"
-          "Pack optionnel des voix IA. Installer VoxBox d'abord (dernière release), puis lancer VoxBox-Voix-IA-setup.exe."
-          pack/VoxBox-Voix-IA-setup.exe
+          "Pack optionnel des voix IA. Installer VoxBox d'abord (dernière release), puis lancer VoxBox-Voix-IA-setup.exe, ou le mettre à jour depuis VoxBox (Réglages → Voix IA)."
+          pack/VoxBox-Voix-IA-setup.exe pack/ai-pack-manifest.json pack/ai-pack-manifest.json.sig

@@ -4,9 +4,9 @@
 // The bundle dir holds exactly one signed NSIS installer (<name>.exe + <name>.exe.sig).
 // The signature is verified against the public key the app ships with (tauri.conf.json),
 // so a release signed with any other key is never published.
-import { createHash, createPublicKey, verify } from "node:crypto";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { verifyMinisign } from "./minisign.mjs";
 
 const [dir, version, repo, configPath] = process.argv.slice(2);
 if (!dir || !version || !repo || !configPath) {
@@ -18,42 +18,6 @@ const fail = (message) => {
   console.error(message);
   process.exit(1);
 };
-
-/** Second line of a base64-encoded minisign file (the first is an untrusted comment). */
-function minisignLines(base64) {
-  return Buffer.from(base64, "base64").toString("utf8").split("\n").map((l) => l.trim());
-}
-
-/**
- * Minisign verification as done by the Tauri updater: key id must match, the Ed25519
- * signature covers the BLAKE2b-512 hash of the file ("ED") or the file itself ("Ed"),
- * and the global signature covers signature + trusted comment.
- */
-function verifySignature(file, signatureB64, pubkeyB64) {
-  const key = Buffer.from(minisignLines(pubkeyB64)[1] ?? "", "base64");
-  if (key.length !== 42 || key.subarray(0, 2).toString() !== "Ed") fail("public key in tauri.conf.json is not a minisign key");
-  const [, sigLine = "", trusted = "", globalLine = ""] = minisignLines(signatureB64);
-  const sig = Buffer.from(sigLine, "base64");
-  if (sig.length !== 74) fail("signature file is malformed");
-  const algorithm = sig.subarray(0, 2).toString();
-  if (!sig.subarray(2, 10).equals(key.subarray(2, 10))) {
-    fail("installer was signed with another key than the one in tauri.conf.json (TAURI_SIGNING_PRIVATE_KEY does not match)");
-  }
-  const publicKey = createPublicKey({
-    key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), key.subarray(10)]),
-    format: "der",
-    type: "spki",
-  });
-  const data = readFileSync(file);
-  const message = algorithm === "ED" ? createHash("blake2b512").update(data).digest() : data;
-  if (!verify(null, message, publicKey, sig.subarray(10))) fail("installer signature does not verify");
-  const comment = trusted.replace(/^trusted comment: /, "");
-  const global = Buffer.from(globalLine, "base64");
-  if (!verify(null, Buffer.concat([sig.subarray(10), Buffer.from(comment)]), publicKey, global)) {
-    fail("signature trusted comment does not verify");
-  }
-  return comment;
-}
 
 /**
  * The trusted comment is authenticated: it must name the version published (the updater
@@ -89,7 +53,13 @@ const signature = readFileSync(join(dir, `${exe}.sig`), "utf8").trim();
 if (!signature) fail(`${exe}.sig is empty`);
 const pubkey = JSON.parse(readFileSync(configPath, "utf8"))?.plugins?.updater?.pubkey;
 if (typeof pubkey !== "string" || !pubkey) fail(`no plugins.updater.pubkey in ${configPath}`);
-checkTrustedComment(verifySignature(join(dir, exe), signature, pubkey), exe);
+let trusted;
+try {
+  trusted = verifyMinisign(readFileSync(join(dir, exe)), signature, pubkey);
+} catch (error) {
+  fail(`installer ${error.message}`);
+}
+checkTrustedComment(trusted, exe);
 const manifest = {
   version,
   notes: `https://github.com/${repo}/releases/tag/v${version}`,

@@ -18,6 +18,8 @@ voxbox-dsp = { path = "crates/voxbox-dsp" }
 voxbox-rvc = { path = "crates/voxbox-rvc" }
 voxbox-myinstants = { path = "crates/voxbox-myinstants" }
 voxbox-voicemodels = { path = "crates/voxbox-voicemodels" }
+voxbox-aipack = { path = "crates/voxbox-aipack" }
+voxbox-net = { path = "crates/voxbox-net" }
 voxbox-engine = { path = "crates/voxbox-engine" }
 
 [profile.dev.package."*"]

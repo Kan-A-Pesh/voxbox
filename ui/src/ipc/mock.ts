@@ -2,7 +2,7 @@
 // It mirrors the contract semantics of src-tauri/src/commands.rs closely enough to drive every screen.
 import type { AvailableUpdate, Backend, CommandArgs, CommandName, CommandResult, EventName, FileDropEvent, Unlisten } from "./backend";
 import type {
-  AiModelMeta, DeviceSelection, Devices, Events, ModelPage, RemoteSound, SearchPage, Snapshot, Sound, VoicePreset, HotkeyAction,
+  AiModelMeta, AiPackUpdate, DeviceSelection, Devices, Events, ModelPage, RemoteSound, SearchPage, Snapshot, Sound, VoicePreset, HotkeyAction,
 } from "./contract";
 import {
   AI_MODELS, AI_VOICES, BUILTIN_VOICES, CUSTOM_VOICES, EFFECT_CATALOG, HOTKEYS, MYINSTANTS_TITLES, SETTINGS, SOUNDS,
@@ -31,6 +31,12 @@ export interface MockOptions {
   update?: MockUpdate | null;
   /** Simulate voice-models.com being unreachable. */
   voicemodelsOffline?: boolean;
+  /** Installed « Voix IA » pack (default: pack 14, ready for online imports). */
+  aiPack?: Partial<Snapshot["aiPack"]>;
+  /** Newer pack published (default: none). */
+  aiPackUpdate?: AiPackUpdate | null;
+  /** Installing the pack fails with this message once downloaded. */
+  aiPackFailWith?: string;
 }
 
 export interface MockUpdate {
@@ -155,6 +161,7 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
     hotkeys: clone(HOTKEYS),
     aiModels: clone(AI_MODELS),
     aiBackend: { backend: "cuda", deviceName: "NVIDIA GeForce RTX 4070" },
+    aiPack: { installed: true, version: 14, onlineReady: true, ...options.aiPack },
   };
 
   const listeners = new Map<EventName, Set<(p: never) => void>>();
@@ -500,6 +507,26 @@ export function createMockBackend(options: MockOptions = {}): MockBackend {
             // Like the backend: only the .pth of an online archive is imported, never its .index.
             resolve(registerAiModel(name.trim(), false));
           }
+        }, aiImportStepMs);
+        timers.add(timer);
+      }),
+    ai_pack_check: () => options.aiPackUpdate ?? null,
+    ai_pack_install: ({ version }) =>
+      new Promise((resolve, reject) => {
+        if (options.aiPackUpdate?.version !== version) {
+          return reject(new Error(`le pack ${version} n'est plus le dernier publié : recherche à nouveau une mise à jour`));
+        }
+        let progress = 0;
+        emit("ai-pack-progress", { progress });
+        const timer = setInterval(() => {
+          progress = Math.min(1, progress + 0.25);
+          emit("ai-pack-progress", { progress });
+          if (progress < 1) return;
+          clearInterval(timer);
+          timers.delete(timer);
+          if (options.aiPackFailWith) reject(new Error(options.aiPackFailWith));
+          // The real app now closes and installs the pack; the mock just keeps running.
+          else resolve(null);
         }, aiImportStepMs);
         timers.add(timer);
       }),

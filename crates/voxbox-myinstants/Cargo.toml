@@ -13,3 +13,4 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 scraper = "0.22"
 tempfile = "3"
 url = "2"
+voxbox-net.workspace = true

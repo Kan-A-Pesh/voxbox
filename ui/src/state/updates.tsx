@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AvailableUpdate } from "../ipc/backend";
 import { errorMessage, useVox } from "./store";
+import { isPackInstalling, usePackInstalling } from "./packInstalling";
 
 /** The app looks for a newer release at launch, then this often. */
 export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
@@ -155,6 +156,8 @@ export function UpdatesProvider({ children, canLeave }: { children: ReactNode; c
   const install = useCallback(() => {
     const current = phaseRef.current;
     if (current.kind !== "available" && current.kind !== "failed") return;
+    // The Voix IA pack is being installed and VoxBox is about to close for it: not both.
+    if (isPackInstalling()) return;
     // VoxBox restarts: unsaved work (a voice being edited) asks first.
     if (!canLeave()) return;
     const { update } = current;
@@ -195,10 +198,14 @@ export function UpdatesProvider({ children, canLeave }: { children: ReactNode; c
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-/** True while the update pop-up is on screen (modal: the rest of the app ignores input). */
+/**
+ * True while the update pop-up is on screen (modal: the rest of the app ignores input). It
+ * waits while the Voix IA pack is being installed: that pop-up stays in front.
+ */
 export function useUpdateDialogShown(): boolean {
   const { dialogOpen, phase } = useUpdates();
-  return dialogOpen && phase.kind !== "none";
+  const packInstalling = usePackInstalling();
+  return dialogOpen && phase.kind !== "none" && !packInstalling;
 }
 
 export function useUpdates(): UpdatesState {

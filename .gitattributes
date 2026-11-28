@@ -1,0 +1,3 @@
+# Signed test fixtures: checked byte for byte against their signature, so never converted
+# to CRLF on a Windows checkout.
+crates/voxbox-aipack/tests/fixtures/** -text

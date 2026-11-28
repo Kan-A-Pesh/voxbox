@@ -6,6 +6,7 @@ import { usePagedFeed, type FetchPage } from "../../lib/usePagedFeed";
 import { PixelIcon } from "../../components/PixelIcon";
 import { EmptyState, ErrorPanel, Field, ProgressBar, SearchField } from "../../components/Controls";
 import { getRunning, setRunning, useRunningImport, type RunningImport } from "./aiImportRunning";
+import { useAiPack } from "../../state/aiPack";
 
 export const VOICE_MODELS_DEBOUNCE_MS = 300;
 const NAME_MAX = 40;
@@ -25,7 +26,9 @@ export function cleanModelTitle(title: string): string {
 const modelKey = (m: RemoteModel) => m.downloadUrl;
 
 export function VoiceModelsExplorer({ onImported }: { onImported: (voiceId: string | null) => void }) {
-  const { backend, setSnapshot, call, notify } = useVox();
+  const { backend, snapshot, setSnapshot, call, notify } = useVox();
+  // An old pack (or none) cannot convert downloaded models: say so and offer the update first.
+  const packReady = snapshot.aiPack.onlineReady;
   const [input, setInput] = useState("");
   const query = useDebounced(input.trim(), VOICE_MODELS_DEBOUNCE_MS);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -90,6 +93,7 @@ export function VoiceModelsExplorer({ onImported }: { onImported: (voiceId: stri
         personnes dont ils imitent la voix. Seul le modèle (.pth) est importé : l'index d'une source inconnue n'est pas lu,
         par sécurité.
       </p>
+      {packReady ? null : <PackNotice installed={snapshot.aiPack.installed} />}
       <SearchField label="Rechercher un modèle" placeholder="Rechercher un modèle" value={input} onChange={setInput} />
       {/* Outside the results: stays visible when the model being added leaves them (new search, reopened panel). */}
       {inFlight?.online ? <ActiveImport running={inFlight} stage={inFlight.online.stage} /> : null}
@@ -117,7 +121,7 @@ export function VoiceModelsExplorer({ onImported }: { onImported: (voiceId: stri
                 key={`${m.downloadUrl}-${i}`}
                 model={m}
                 running={inFlight?.online?.url === m.downloadUrl}
-                locked={inFlight !== null}
+                locked={inFlight !== null || !packReady}
                 error={errors[m.downloadUrl] ?? null}
                 onAdd={(name) => add(m, name)}
               />
@@ -139,6 +143,25 @@ export function VoiceModelsExplorer({ onImported }: { onImported: (voiceId: stri
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+/** Above the results while the installed pack cannot import downloaded models. */
+function PackNotice({ installed }: { installed: boolean }) {
+  const { phase, manual, offer } = useAiPack();
+  return (
+    <div className="vm-notice" role="status">
+      <p>
+        {installed
+          ? "Le pack « Voix IA » installé est trop ancien pour ajouter des modèles en ligne."
+          : "Installe le pack « Voix IA » pour ajouter des modèles en ligne."}
+      </p>
+      <button type="button" className="btn btn--small btn--primary" disabled={manual.kind === "checking" || phase.kind === "installing"} onClick={offer}>
+        {manual.kind === "checking" ? "Recherche…" : installed ? "Mettre à jour le pack" : "Installer le pack"}
+      </button>
+      {manual.kind === "upToDate" ? <p className="hint">Aucun pack plus récent n’est encore publié : réessaie plus tard.</p> : null}
+      {manual.kind === "failed" ? <p className="field__error">Recherche impossible : {manual.message}</p> : null}
     </div>
   );
 }

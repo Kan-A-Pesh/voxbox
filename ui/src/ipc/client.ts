@@ -21,6 +21,14 @@ export async function getBackend(): Promise<Backend> {
       update: params.has("update")
         ? { version: "0.1.42", stepMs: 400, failWith: params.get("update") === "fail" ? "téléchargement interrompu (réseau)" : undefined }
         : null,
+      // ?pack=old: a pack too old for online imports; ?pack=none: no pack. ?packupdate: pack 15 published.
+      aiPack:
+        params.get("pack") === "old"
+          ? { installed: true, version: null, onlineReady: false }
+          : params.get("pack") === "none"
+            ? { installed: false, version: null, onlineReady: false }
+            : undefined,
+      aiPackUpdate: params.has("packupdate") ? { version: 15, size: 790_000_000 } : null,
     });
   }
   return backend;
