@@ -1,0 +1,19 @@
+[package]
+name = "voxbox-aipack"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Finds, verifies and downloads newer « VoxBox - Voix IA » pack releases"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+base64 = "0.22"
+minisign-verify = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+sha2 = "0.10"
+tempfile = "3"
+url = "2"
+voxbox-net.workspace = true

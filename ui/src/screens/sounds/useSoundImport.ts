@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useVox } from "../../state/store";
-import { useUpdateDialogShown } from "../../state/updates";
+import { useModalShown } from "../../state/aiPack";
 
 export const SOUND_EXTENSIONS = ["mp3", "wav", "ogg", "flac"];
 
@@ -34,8 +34,8 @@ export function useSoundImport() {
   useEffect(() => {
     importRef.current = importPaths;
   }, [importPaths]);
-  // Drops come from the window, not the page: while the update pop-up is modal, they are ignored.
-  const modal = useUpdateDialogShown();
+  // Drops come from the window, not the page: while a pop-up (app or pack update) is modal, they are ignored.
+  const modal = useModalShown();
   const modalRef = useRef(modal);
   useEffect(() => {
     modalRef.current = modal;

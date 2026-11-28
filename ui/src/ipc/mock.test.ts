@@ -20,12 +20,12 @@ const COVERED: Record<keyof Commands, true> = {
   play_sound: true, stop_sound: true, stop_all_sounds: true, myinstants_trending: true, myinstants_search: true,
   myinstants_add: true, set_hotkey: true, import_ai_model: true, delete_ai_model: true, open_logs_folder: true,
   log_client_error: true, myinstants_play: true, set_voice_favorite: true, begin_page: true,
-  voicemodels_search: true, voicemodels_add: true,
+  voicemodels_search: true, voicemodels_add: true, ai_pack_check: true, ai_pack_install: true,
 };
 
 describe("mock backend honours the IPC contract", () => {
   it("covers every command", () => {
-    expect(Object.keys(COVERED)).toHaveLength(26);
+    expect(Object.keys(COVERED)).toHaveLength(28);
   });
 
   it("returns a complete snapshot with the 22 real presets, the 2 bundled AI voices and ~16 sounds", async () => {

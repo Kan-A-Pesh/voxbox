@@ -84,9 +84,8 @@ export function VoxProvider({ children, backend: injected }: { children: ReactNo
   const notify = useCallback((message: string, kind: Toast["kind"] = "info", logged = false) => {
     if (kind === "error" && !logged) logClientError("message d'erreur", message);
     const id = ++toastId.current;
+    // Hidden on its own by <Toasts> (its timer stops with the app).
     setToasts((t) => [...t.slice(-2), { id, kind, message }]);
-    const words = message.split(/\s+/).length;
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), Math.max(3000, words * 300));
   }, []);
   const dismiss = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), []);
 

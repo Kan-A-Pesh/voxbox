@@ -15,6 +15,7 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use url::Url;
+use voxbox_net::same_origin;
 
 pub mod parser;
 
@@ -278,8 +279,7 @@ fn allowed_host_with_port(base: &Url, target: &Url, allow_media_host: bool) -> b
     };
 
     if base_host.eq_ignore_ascii_case(target_host) {
-        return base.scheme() == target.scheme()
-            && base.port_or_known_default() == target.port_or_known_default();
+        return same_origin(base, target);
     }
 
     if !is_official_myinstants_host(base_host) {

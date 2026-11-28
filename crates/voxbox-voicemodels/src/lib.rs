@@ -15,6 +15,7 @@ use reqwest::redirect::Policy;
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use url::Url;
+use voxbox_net::same_origin;
 
 pub mod extract;
 pub mod parser;
@@ -363,16 +364,6 @@ fn require_success(response: Response) -> Result<Response> {
 /// Local file header, or the end-of-central-directory record of an empty archive.
 fn looks_like_zip(head: &[u8]) -> bool {
     head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06")
-}
-
-fn same_origin(base: &Url, target: &Url) -> bool {
-    base.scheme() == target.scheme()
-        && base.host_str().is_some()
-        && base
-            .host_str()
-            .zip(target.host_str())
-            .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-        && base.port_or_known_default() == target.port_or_known_default()
 }
 
 /// Any https host without credentials, or the client's own origin (local test servers).

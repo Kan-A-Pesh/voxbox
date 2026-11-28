@@ -287,7 +287,7 @@ pub fn stop_all_sounds(state: State<'_, AppState>, page: u64) {
 /// MyInstants uses `reqwest::blocking`, which must not run inside an async task
 /// (`#[tauri::command(async)]` only moves work to the async runtime): it panics in
 /// debug builds and ties up executor threads. These commands use the blocking pool.
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> AppResult<T> + Send + 'static,
 ) -> AppResult<T> {
     tauri::async_runtime::spawn_blocking(work)
@@ -486,9 +486,6 @@ pub fn open_logs_folder(app: AppHandle) -> AppResult<()> {
     Ok(())
 }
 
-/// Converter hardening a downloaded checkpoint needs (see `CONVERTER_API` in convert_rvc.py).
-const ONLINE_CONVERTER_API: u32 = 3;
-
 #[tauri::command]
 pub async fn voicemodels_search(query: String, page: u32) -> AppResult<ModelPage> {
     blocking(move || Ok(voxbox_voicemodels::Client::new().search(&query, page.max(1))?)).await
@@ -507,9 +504,9 @@ pub async fn voicemodels_add(app: AppHandle, url: String, name: String) -> AppRe
         let state = app.state::<AppState>();
         // Checked first: no point downloading 200 MB without a converter able to take it.
         let converter = ai_converter(&state)?;
-        if voxbox_rvc::converter_api(&converter.script) < ONLINE_CONVERTER_API {
+        if voxbox_rvc::converter_api(&converter.script) < crate::ai_pack::ONLINE_CONVERTER_API {
             return Err(AppError::Other(String::from(
-                "le pack « VoxBox - Voix IA » installé est trop ancien pour ajouter des modèles en ligne : installe sa dernière version (l'import depuis tes fichiers reste possible)",
+                "le pack « VoxBox - Voix IA » installé est trop ancien pour ajouter des modèles en ligne : mets-le à jour (Réglages → Voix IA) ; l'import depuis tes fichiers reste possible",
             )));
         }
         let models_dir = state.store.lock().models_dir();

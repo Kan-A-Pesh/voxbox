@@ -1,3 +1,4 @@
+mod ai_pack;
 mod commands;
 mod hotkeys;
 mod state;
@@ -48,6 +49,12 @@ fn init_logging(dir: &std::path::Path) {
 }
 
 pub fn run() {
+    // Before anything else, the single-instance registration included: a pack install handed
+    // over by the previous VoxBox is replacing the runtime this one would load, and the
+    // installer starts VoxBox again once done (which must not be forwarded to this process).
+    if ai_pack::install_running() {
+        std::process::exit(0);
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             tray::show_main(app)
@@ -147,6 +154,8 @@ pub fn run() {
             commands::myinstants_play,
             commands::voicemodels_search,
             commands::voicemodels_add,
+            ai_pack::ai_pack_check,
+            ai_pack::ai_pack_install,
         ])
         .run(tauri::generate_context!())
         .expect("VoxBox n'a pas pu démarrer");

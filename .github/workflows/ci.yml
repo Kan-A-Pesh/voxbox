@@ -61,6 +61,8 @@ jobs:
       - run: pnpm build
       - name: Release manifest checks (scripts/updater_manifest.mjs)
         run: node --test ../scripts/updater_manifest.test.mjs
+      - name: Pack manifest checks (scripts/ai_pack_manifest.mjs)
+        run: node --test ../scripts/ai_pack_manifest.test.mjs
       - name: Release retry checks (scripts/publish_release.sh)
         run: bash ../scripts/publish_release.test.sh
 

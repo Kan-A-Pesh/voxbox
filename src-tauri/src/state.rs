@@ -32,6 +32,7 @@ pub struct Snapshot {
     pub hotkeys: Vec<HotkeyBinding>,
     pub ai_models: Vec<AiModelMeta>,
     pub ai_backend: BackendInfo,
+    pub ai_pack: crate::ai_pack::AiPackInfo,
 }
 
 /// Paths of files shipped by the installers (`resources/` next to the exe). The
@@ -45,6 +46,10 @@ pub struct Resources {
     pub ai_voices: PathBuf,
     pub python_exe: PathBuf,
     pub converter_script: PathBuf,
+    /// `resources/` itself: its parent is VoxBox's install folder.
+    pub dir: PathBuf,
+    /// `ai-pack.json`: version of the installed pack (crate::ai_pack).
+    pub pack_manifest: PathBuf,
 }
 
 impl Resources {
@@ -55,6 +60,8 @@ impl Resources {
             ai_voices: dir.join("rvc-voices"),
             python_exe: converter.join("python.exe"),
             converter_script: converter.join("convert_rvc.py"),
+            dir: dir.to_path_buf(),
+            pack_manifest: dir.join("ai-pack.json"),
         }
     }
 }
@@ -211,6 +218,8 @@ pub enum AppError {
     MyInstants(#[from] voxbox_myinstants::MyInstantsError),
     #[error(transparent)]
     VoiceModels(#[from] voxbox_voicemodels::VoiceModelsError),
+    #[error(transparent)]
+    AiPack(#[from] voxbox_aipack::AiPackError),
     #[error("{0}")]
     Other(String),
 }
@@ -287,6 +296,7 @@ impl AppState {
             hotkeys: store.hotkeys.clone(),
             ai_models,
             ai_backend: self.backend.clone(),
+            ai_pack: crate::ai_pack::info(&self.resources),
         }
     }
 

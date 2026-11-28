@@ -5,6 +5,9 @@ import { Toasts } from "./components/Toasts";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { UpdateDialog } from "./components/UpdateDialog";
 import { UpdatesProvider } from "./state/updates";
+import { AiPackBanner } from "./components/AiPackBanner";
+import { AiPackDialog } from "./components/AiPackDialog";
+import { AiPackProvider } from "./state/aiPack";
 import { newerStatus, useVox } from "./state/store";
 import { VoicesScreen } from "./screens/VoicesScreen";
 import { SoundsScreen } from "./screens/SoundsScreen";
@@ -21,7 +24,7 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
     setScreen(next);
   };
 
-  // Installing an update restarts the app: same question as leaving the screen.
+  // Installing an update (app or AI pack) restarts the app: same question as leaving the screen.
   const canLeave = useCallback(() => !leaveGuard.current || leaveGuard.current(), []);
 
   useEffect(() => {
@@ -59,18 +62,22 @@ export function App({ initialScreen = "voices" }: { initialScreen?: ScreenKey })
 
   return (
     <UpdatesProvider canLeave={canLeave}>
-      <div className="app">
-        <Sidebar screen={screen} onNavigate={navigate} />
-        <main className="main" id="contenu">
-          <UpdateBanner />
-          {screen === "voices" && <VoicesScreen leaveGuardRef={leaveGuard} />}
-          {screen === "sounds" && <SoundsScreen />}
-          {screen === "settings" && <SettingsScreen />}
-        </main>
-        <BottomBar onOpenSettings={() => navigate("settings")} />
-        <Toasts />
-        <UpdateDialog />
-      </div>
+      <AiPackProvider canLeave={canLeave}>
+        <div className="app">
+          <Sidebar screen={screen} onNavigate={navigate} />
+          <main className="main" id="contenu">
+            <UpdateBanner />
+            <AiPackBanner />
+            {screen === "voices" && <VoicesScreen leaveGuardRef={leaveGuard} />}
+            {screen === "sounds" && <SoundsScreen />}
+            {screen === "settings" && <SettingsScreen />}
+          </main>
+          <BottomBar onOpenSettings={() => navigate("settings")} />
+          <Toasts />
+          <UpdateDialog />
+          <AiPackDialog />
+        </div>
+      </AiPackProvider>
     </UpdatesProvider>
   );
 }

@@ -3,8 +3,14 @@
 #   rvc-assets\  contentvec.onnx, rmvpe.onnx, onnxruntime.dll (+providers_shared), DirectML.dll, notices
 #   rvc-voices\  bundled voices converted from converter/bundled_voices.json
 #   converter\   embedded Python + convert_rvc.py (used when the user imports a .pth)
-# Nothing here runs on the user's PC: the app never downloads anything for AI voices.
-param([Parameter(Mandatory = $true)][string]$OutputDir)
+#   ai-pack.json {"version": N}: the pack's version, read by the app's pack update (Réglages →
+#                Voix IA); N is the ai-pack-N release it ships in.
+# Nothing here runs on the user's PC: the app only downloads the signed installer of a newer
+# pack (src-tauri/src/ai_pack.rs).
+param(
+    [Parameter(Mandatory = $true)][string]$OutputDir,
+    [Parameter(Mandatory = $true)][ValidateRange(1, [int]::MaxValue)][int]$Version
+)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $Root = Split-Path $PSScriptRoot -Parent
@@ -14,6 +20,8 @@ $Voices = Join-Path $OutputDir 'rvc-voices'
 $Converter = Join-Path $OutputDir 'converter'
 $Tmp = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Force $OutputDir, $Voices, $Tmp | Out-Null
+# ConvertTo-Json writes a bare integer: the app parses { "version": <u32> }.
+@{ version = $Version } | ConvertTo-Json -Compress | Set-Content (Join-Path $OutputDir 'ai-pack.json') -Encoding ascii
 
 function Get-Verified([string]$Url, [string]$Sha256, [string]$Out) {
     Invoke-WebRequest $Url -OutFile $Out

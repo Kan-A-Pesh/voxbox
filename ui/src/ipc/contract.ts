@@ -154,6 +154,23 @@ export interface AppSettings {
   favoriteVoiceIds: string[];
 }
 
+/** The installed « VoxBox - Voix IA » pack. */
+export interface AiPackInfo {
+  /** Its converter or AI assets are there. */
+  installed: boolean;
+  /** From resources/ai-pack.json; null for a pack published before that file existed (or none). */
+  version: number | null;
+  /** Its converter can import downloaded models (voice-models.com). */
+  onlineReady: boolean;
+}
+
+/** A newer published pack (its manifest is signed with the updater key). */
+export interface AiPackUpdate {
+  version: number;
+  /** Installer size, in bytes. */
+  size: number;
+}
+
 export interface Snapshot {
   settings: AppSettings;
   status: EngineStatus;
@@ -163,6 +180,7 @@ export interface Snapshot {
   hotkeys: HotkeyBinding[];
   aiModels: AiModelMeta[];
   aiBackend: BackendInfo;
+  aiPack: AiPackInfo;
 }
 
 /** Tauri commands: name -> [args, result]. Args are passed as an object. */
@@ -218,6 +236,14 @@ export interface Commands {
    * Emits "voicemodels-progress" (download, then convert). Also creates the AI voice.
    */
   voicemodels_add: [{ url: string; name: string }, AiModelMeta];
+  /** The newest published pack when it is newer than the installed one (any pack when none is installed). */
+  ai_pack_check: [Record<string, never>, AiPackUpdate | null];
+  /**
+   * Downloads pack `version` (emits "ai-pack-progress"), checks it against its signed manifest,
+   * then VoxBox closes while it installs (Windows authorization) and starts again. Resolves just
+   * before VoxBox closes; rejects when nothing was launched.
+   */
+  ai_pack_install: [{ version: number }, null];
 }
 
 /** Backend -> UI events. */
@@ -231,4 +257,6 @@ export interface Events {
   /** The "stop all" shortcut ran: how many times so far. A play clicked before it is refused (it just ends). */
   "sounds-stopped": number;
   "voicemodels-progress": { stage: "download" | "convert"; progress: number };
+  /** Download of the pack being installed, 0..1. */
+  "ai-pack-progress": { progress: number };
 }

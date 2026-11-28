@@ -1,0 +1,10 @@
+[package]
+name = "voxbox-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "URL helpers shared by VoxBox's download clients"
+
+[dependencies]
+url = "2"

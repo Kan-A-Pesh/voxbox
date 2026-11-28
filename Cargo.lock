@@ -5536,6 +5536,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -5547,12 +5548,29 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "voxbox-aipack",
  "voxbox-dsp",
  "voxbox-engine",
  "voxbox-myinstants",
  "voxbox-rvc",
  "voxbox-voicemodels",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "voxbox-aipack"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "minisign-verify",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+ "voxbox-net",
 ]
 
 [[package]]
@@ -5594,6 +5612,14 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "url",
+ "voxbox-net",
+]
+
+[[package]]
+name = "voxbox-net"
+version = "0.1.0"
+dependencies = [
+ "url",
 ]
 
 [[package]]
@@ -5623,6 +5649,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "url",
+ "voxbox-net",
  "zip",
 ]
 
